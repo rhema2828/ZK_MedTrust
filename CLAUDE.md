@@ -181,8 +181,18 @@ to be rediscovered.
   *creation*, not on checking one that already exists. 52 new tests
   (`backend/test_zk_proof.py` + additions to `test_security.py`), all
   against the real toolchain, all passing.
-- **Phase 9, 10 — not started.** The full test matrix and final docs. See
-  the roadmap table at the bottom of `zk/README.md` for current status.
+- **Phase 9 — full test matrix.** Checked the brief's Phase 9 checklist
+  against the 118 tests Phases 1-8 already had spread across 8 files —
+  every item already had a real, passing test. Added the two genuinely
+  missing cases (`/verify_proof` with a malformed request body → 422;
+  a well-formed-but-garbage proof → `zk_verified: false`, not a crash),
+  documented the full item→test mapping in `zk/PHASE9_TEST_MATRIX.md`
+  (including the deliberate call that Groth16 proofs are intentionally
+  *not* nonce-gated, unlike tickets — verification must stay re-checkable
+  by anyone), and added `run_all_tests.sh` at the repo root so the whole
+  120-test suite runs as one command instead of four. 120/120 passing.
+- **Phase 10 — not started.** Final docs pass. See the roadmap table at
+  the bottom of `zk/README.md` for current status.
 
 ## Not yet built
 

@@ -435,6 +435,26 @@ class VerifyProofEndpointTests(unittest.TestCase):
         resp = self.client.post("/verify_proof", json={"proof": {}, "public_signals": []})
         self.assertEqual(resp.status_code, 401)
 
+    def test_malformed_request_body_rejected_before_reaching_the_verifier(self):
+        # Missing required fields entirely - Pydantic's own validation,
+        # never reaches verify_accuracy_proof at all.
+        resp = self.client.post("/verify_proof", json={"nonsense": True}, headers=self.HEADERS)
+        self.assertEqual(resp.status_code, 422)
+
+    def test_well_formed_but_garbage_proof_content_returns_false_not_a_crash(self):
+        # Passes Pydantic validation (right shape: a dict + a list of
+        # strings) but the content isn't a real proof at all. This is the
+        # "malformed proof rejected" checklist item exercised through the
+        # actual HTTP route, not just the bridge module directly
+        # (backend/test_zk_proof.py already covers the bridge itself).
+        resp = self.client.post(
+            "/verify_proof",
+            json={"proof": {"pi_a": ["not", "real"], "pi_b": [], "pi_c": []}, "public_signals": ["1", "2", "3"]},
+            headers=self.HEADERS,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"zk_verified": False})
+
 
 if __name__ == "__main__":
     unittest.main()

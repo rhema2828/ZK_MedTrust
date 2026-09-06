@@ -928,5 +928,5 @@ from the repo root (needs the one-time Groth16 setup run first — see Phase
 | 6. Merkle + sampling + ZK wiring | ✅ done, verified end-to-end against real evaluation output (both the correctly-rejected and correctly-verified cases) |
 | 7. FastAPI `/generate_proof` + `/verify_proof` | ✅ done — real Groth16 proofs, real verification, both live in the running API |
 | 8. Security layer | ✅ done, scoped to `/generate_proof` + `/verify_proof` |
-| 9. Full test matrix | partial — see each phase's own Tests section |
+| 9. Full test matrix | ✅ done — `PHASE9_TEST_MATRIX.md` maps every brief checklist item to its test; `bash run_all_tests.sh` runs all 120 in one command |
 | 10. Documentation | not started |
