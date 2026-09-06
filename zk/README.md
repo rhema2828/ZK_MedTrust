@@ -164,6 +164,7 @@ zk/
 ├── circuits/square.circom      the Phase 1 circuit
 ├── scripts/                    install, ceremony, demonstration
 ├── merkle/                     Phase 2: canonicalize, hash, tree, CLI
+├── sampling/                   Phase 3: bound sample selection, CLI
 ├── data/sample_dataset.json    Phase 2: synthetic demo dataset
 ├── test/                       automated sanity + Merkle assertions
 ├── build/                      ALL generated — gitignored
@@ -293,13 +294,95 @@ the project brief calls for: a valid inclusion proof succeeds; a modified
 leaf fails; a modified root fails; a modified source record fails (because
 it changes the leaf it hashes to) — run with `npm test`.
 
+---
+
+# Phase 3 — Cryptographically Bound Sampling
+
+Phase 2 lets a hospital commit to a whole dataset. Phase 3 decides *which*
+records from that dataset actually get evaluated for the accuracy claim —
+without letting the hospital quietly pick the easy ones.
+
+## The problem being solved
+
+If sample selection were `random.sample(dataset, k)` run locally by the
+prover, nothing stops them from running it 500 times, privately, until they
+land on a subset their model happens to get right, and only generating a
+proof over *that* subset. The proof itself would be completely genuine
+Groth16 — and completely meaningless, because the sample was cherry-picked.
+
+## The fix: derive the sample from the commitment, not from chance
+
+```
+dataset  --(Phase 2)-->  root  --(Phase 3)-->  seed  -->  selected indices
+```
+
+`sampling/selectSamples.mjs` implements this in two steps, both pure
+functions of already-public values:
+
+1. **Seed.** `seed = SHA256(root | dataset_version | sample_size)`. All
+   three inputs are things a verifier already has from the published
+   commitment — this "randomness" is not random at all, it's a fixed hash
+   of fixed public values.
+2. **Expand.** For a counter `i = 0, 1, 2, …`: `candidate = SHA256(seed ":" i)
+   mod record_count`. Keep the first `sample_size` *distinct* candidates —
+   duplicates are skipped, which is what makes this "without replacement."
+   Return the result sorted ascending (only the *set* of indices matters,
+   not discovery order).
+
+Once a root is published, the sample it implies is already fixed. There is
+no "try again" step: trying again means presenting a different root, which
+is a different, publicly visible commitment to a (possibly different)
+dataset — not a private retry of the same one.
+
+## What a verifier does
+
+`verifySelection(root, dataset_version, record_count, sample_size,
+claimedIndices)` recomputes the same two steps independently and checks the
+result against what the prover claims to have evaluated. It needs nothing
+private — just the four public values already on the commitment plus the
+prover's claimed index list.
+
+## Try it
+
+```bash
+cd zk
+node merkle/commitDataset.mjs data/sample_dataset.json   # Phase 2, if not already run
+node sampling/selectFromCommitment.mjs 3
+```
+
+Reads `build/commitment.json` and `build/proofs.json`, selects 3 of the 6
+demo records, and writes `build/selection.json`: the root, the seed, the
+selected indices, and — for convenience — each selected record's inclusion
+proof from Phase 2, so Phase 4 can pick up straight from this file.
+
+## What this does — and does not — protect against
+
+Binding the sample to the root stops re-rolling samples **for a fixed,
+already-published dataset**. It does **not** by itself stop a curator from
+constructing several different-but-superficially-legitimate datasets ahead
+of time and only publishing the root of whichever one happens to produce a
+favorable sample — that "shop around before committing" gap needs an
+unpredictable input the curator doesn't control (e.g. a public randomness
+beacon, or an independent auditor's nonce) mixed into the seed. Not
+implemented here; noted so this file isn't read as claiming more than it
+provides.
+
+## Tests
+
+`test/sampling.test.mjs` — determinism (same root/version/size always
+yields the same indices, 50 repeated calls included as a direct
+"there is nothing to re-roll" check), sensitivity to root and to
+dataset_version, index validity (unique, in-range, correct count), and
+`verifySelection` accepting the genuine selection while rejecting a
+swapped index, the wrong root, or the wrong length.
+
 ## Roadmap
 
 | Phase | Status |
 |---|---|
 | 1. Toolchain sanity (`x*x=y`) | ✅ done |
 | 2. Merkle dataset commitment | ✅ done |
-| 3. Cryptographically bound sampling | not started |
+| 3. Cryptographically bound sampling | ✅ done |
 | 4. Evaluation pipeline | not started |
 | 5. Accuracy circuit (`correct*100 >= threshold*total`) | not started |
 | 6. Merkle + sampling + ZK wiring | not started |
