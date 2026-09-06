@@ -1,0 +1,8 @@
+# Generated ZK artifacts - never commit these.
+build/
+node_modules/
+*.ptau
+*.zkey
+*.r1cs
+*.wasm
+*.sym

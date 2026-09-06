@@ -1,0 +1,19 @@
+{
+  "name": "zk-medtrust-zk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-knowledge layer for ZK_MedTrust: Circom circuits + SnarkJS Groth16 tooling.",
+  "//": "No \"type\": \"module\" on purpose. circom generates CommonJS helpers into build/ (generate_witness.js, witness_calculator.js); declaring the package as ESM breaks them. Our own ESM files use the .mjs extension instead.",
+  "scripts": {
+    "install:toolchain": "bash scripts/install_toolchain.sh",
+    "ptau": "bash scripts/ptau.sh",
+    "phase1": "bash scripts/phase1_square.sh",
+    "phase5": "bash scripts/phase5_accuracy.sh",
+    "test": "node --test --test-force-exit test/*.test.mjs"
+  },
+  "dependencies": {
+    "circomlib": "^2.0.5",
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.5"
+  }
+}
