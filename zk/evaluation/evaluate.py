@@ -24,17 +24,18 @@ correct_predictions / total_predictions for Phase 5's accuracy circuit.
 
 IMPORTANT - read before trusting any number this script prints:
 
-  The ground_truth labels in data/sample_dataset.json are SYNTHETIC
-  placeholders, assigned by hand so this pipeline has something concrete to
-  compare predictions against. They are not real diagnoses. Combined with
-  the fact that ml_inference.py's classification head is a randomly
-  initialized, UNTRAINED Linear(512, 2) layer (see CLAUDE.md), the
-  "correct_predictions" this script reports is not a medically meaningful
-  accuracy figure. What Phases 4-6 demonstrate is real: a real model runs,
-  produces real (deterministic) outputs, which get compared and counted
-  the same way real evaluation data would be. Only the labels being
-  compared against are synthetic, and that is stated everywhere this
-  number is printed or written, not just here.
+  The ground_truth labels AND images in data/sample_dataset.json are
+  SYNTHETIC placeholders (see make_synthetic_images.py), assigned/generated
+  so this pipeline has something concrete to compare predictions against.
+  They are not real diagnoses or real X-rays. The model itself IS real and
+  trained (torchxrayvision's densenet121-res224-all, see CLAUDE.md) - but
+  the "correct_predictions" this script reports is still not a medically
+  meaningful accuracy figure, because what's being fed to it is synthetic.
+  What Phases 4-6 demonstrate is real: a real trained model runs, produces
+  real (deterministic) outputs, which get compared and counted the same way
+  real evaluation data would be. Only the images and labels being compared
+  against are synthetic, and that is stated everywhere this number is
+  printed or written, not just here.
 """
 
 import argparse
@@ -135,10 +136,10 @@ def run_evaluation(selection_path: Path, dataset_path: Path, images_dir: Path) -
 
     return {
         "synthetic_data_warning": (
-            "ground_truth labels are SYNTHETIC placeholders and the model's "
-            "classification head is untrained (random init, seed=42) - these "
-            "numbers are NOT a medically meaningful accuracy figure. See "
-            "CLAUDE.md and zk/README.md."
+            "ground_truth labels and images are SYNTHETIC placeholders (see "
+            "zk/evaluation/make_synthetic_images.py) - these numbers are NOT a "
+            "medically meaningful accuracy figure, regardless of the model "
+            "being real and trained. See CLAUDE.md and zk/README.md."
         ),
         "root": selection["root"],
         "dataset_version": selection["dataset_version"],
