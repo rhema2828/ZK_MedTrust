@@ -117,13 +117,31 @@ to be rediscovered.
   - This section was written when `backend/ml_inference.py` still used an
     ImageNet ResNet-18 with an untrained random head, and the sandbox that built
     it couldn't reach `download.pytorch.org` to even export that model. Both are
-    now moot: `ml_inference.py` was replaced with a real trained model (see
-    above) before this branch was merged, and export/inference already works on
-    this machine. `zk/evaluation/test_evaluate.py`'s real-model integration test
-    has not yet been re-run against the new model — do that before trusting its
-    13/13-pass claim below.
-- **Phases 5–10 — not started.** Accuracy circuit
-  (`correct*100 >= threshold*total`), wiring Merkle+sampling+ZK together, real
+    now moot: `ml_inference.py` was replaced with a real trained model before
+    this branch was merged, and on this machine every step above has been
+    re-run and verified for real: Phase 1's tamper tests pass, the Merkle
+    root/sampling reproduce deterministically, `evaluate.py` runs the real
+    model end-to-end, and `zk/evaluation/test_evaluate.py`'s real-model
+    integration test — previously stale (hardcoded to check for the deleted
+    `resnet18.onnx`, so it silently skipped) — was fixed to reference
+    `ml_inference.MODEL_PATH` and now genuinely passes (13/13, 0 skipped).
+- **Phase 5 — accuracy ZK circuit.** `zk/circuits/accuracy.circom` proves
+  `correct_predictions * 100 >= threshold * total_predictions` (a threshold
+  claim, not an equality) via circomlib's `LessThan`/`GreaterEqThan`, with
+  every value explicitly `Num2Bits`-range-checked before comparison —
+  circomlib's comparators are only sound when inputs are pre-constrained to
+  fit their bit-width, a well-known circom footgun otherwise. `total_predictions`
+  and `threshold` are public (total is already public via Phase 3's
+  `sample_size`; making it private would let a prover fabricate `total=1` to
+  trivially clear any threshold); `correct_predictions` is the one private
+  input. All four constraints (`0<total`, `0<=correct<=total`, `0<=threshold<=100`,
+  the accuracy inequality itself) are hard constraints — violating any of them
+  means no witness can be generated at all, not just that a proof gets
+  rejected. `zk/scripts/phase5_accuracy.sh` and `zk/test/accuracy.test.mjs`
+  verify this: a genuine 90%-vs-85% claim proves and verifies, all four
+  violating cases fail at witness generation, and a post-hoc public-input
+  tamper is rejected (43/43 JS tests passing overall).
+- **Phases 6–10 — not started.** Wiring Merkle+sampling+ZK together, real
   `/generate_proof` + `/verify_proof`, the security layer (API keys, rate
   limiting, HMAC tickets), the full test matrix, and final docs. See the roadmap
   table at the bottom of `zk/README.md` for current status.
