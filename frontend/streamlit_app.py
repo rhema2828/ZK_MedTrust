@@ -73,6 +73,18 @@ with left:
         m1.metric("Prediction", pred["prediction"])
         m2.metric("Confidence", f"{pred['confidence'] * 100:.1f}%")
 
+        findings = pred.get("findings")
+        if findings:
+            st.caption(f"Top findings ({pred.get('model', 'model')})")
+            st.dataframe(
+                [
+                    {"Pathology": f["pathology"], "Score": f"{f['score'] * 100:.1f}%"}
+                    for f in findings[:5]
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+
 with right:
     st.subheader("2. Generate & Verify Proof")
 

@@ -1,3 +1,6 @@
 backend/models/*.onnx
+backend/models/*.json
 data/*.png
+data/*.jpg
+data/*.jpeg
 __pycache__/
