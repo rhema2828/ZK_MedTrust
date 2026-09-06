@@ -8,9 +8,10 @@
     "install:toolchain": "bash scripts/install_toolchain.sh",
     "ptau": "bash scripts/ptau.sh",
     "phase1": "bash scripts/phase1_square.sh",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
+    "circomlibjs": "^0.1.7",
     "snarkjs": "^0.7.5"
   }
 }

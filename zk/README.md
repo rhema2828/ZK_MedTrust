@@ -163,14 +163,16 @@ so the build artifacts exist.
 zk/
 ├── circuits/square.circom      the Phase 1 circuit
 ├── scripts/                    install, ceremony, demonstration
-├── test/square.test.mjs        automated sanity assertions
+├── merkle/                     Phase 2: canonicalize, hash, tree, CLI
+├── data/sample_dataset.json    Phase 2: synthetic demo dataset
+├── test/                       automated sanity + Merkle assertions
 ├── build/                      ALL generated — gitignored
 ├── package.json
 └── README.md
 ```
 
-Nothing in `build/` is committed: `.wasm`, `.r1cs`, `.zkey` and `.ptau` files are
-generated artifacts, and the ceremony files run to megabytes.
+Nothing in `build/` is committed: `.wasm`, `.r1cs`, `.zkey`, `.ptau`,
+`commitment.json` and `proofs.json` are all generated artifacts.
 
 ## Known issue
 
@@ -179,12 +181,124 @@ transitively via `snarkjs → bfj → jsonpath`. There is no upstream fix that d
 not break snarkjs, and the affected code path (JSON streaming) is not reachable
 from how we call snarkjs. Left as-is deliberately rather than force-resolved.
 
+---
+
+# Phase 2 — Merkle Dataset Commitment
+
+Phase 2 is the piece that lets a hospital commit to *which* evaluation records
+it is claiming accuracy over, before it runs the model or reveals anything.
+Once a root is published, nobody — not even the hospital — can quietly swap a
+record for a friendlier one without the root changing.
+
+## What is in a leaf
+
+An evaluation record is one (image, ground-truth label) pair. Exactly four
+fields make up the commitment (`merkle/canonicalize.mjs`):
+
+| Field | Meaning |
+|---|---|
+| `record_id` | a unique identifier for this record within the dataset |
+| `image_sha256` | SHA-256 of the **raw image bytes**, as 64 lowercase hex chars |
+| `ground_truth` | `"Normal"` or `"Abnormal"` (matches `ml_inference.CLASSES`) |
+| `dataset_version` | a label for which dataset/version this record belongs to |
+
+`image_sha256` is a hash of image *content*, not a file path. A path can be
+repointed at a different file after the commitment is published; a content
+hash cannot be — recomputing it from the swapped-in image produces a
+different digest, which produces a different leaf, which produces a
+different root. Computing that hash from the actual image file is Phase 4's
+job (it owns the image I/O); this module only ever sees the digest.
+
+Any record missing a field, with an unrecognised `ground_truth`, or a
+malformed `image_sha256` is rejected outright — nothing incomplete ever gets
+hashed into a commitment.
+
+## How records are canonicalized
+
+`canonicalizeRecord()` turns the four fields into one fixed string:
+
+```
+${record_id}|${image_sha256}|${ground_truth_code}|${dataset_version}
+```
+
+where `ground_truth_code` is `"0"` for Normal and `"1"` for Abnormal. Field
+order in the input object never matters — only these four named fields are
+read, in this fixed order, with this fixed delimiter. No JSON serialization,
+so there's no key-ordering or number-formatting ambiguity to worry about.
+
+## What hash function is used, and why two of them
+
+| Step | Hash | Why |
+|---|---|---|
+| record → leaf | SHA-256, reduced mod the BN254 scalar field | standard, arbitrary-length input, runs once outside any circuit |
+| combining tree nodes | Poseidon (via `circomlibjs`) | "SNARK-friendly" — a handful of constraints per hash inside a circom circuit, vs. thousands for SHA-256. Phase 6 will need to re-verify a Merkle path *inside* a circuit, and `circomlibjs`'s Poseidon is bit-for-bit the same implementation circomlib's `Poseidon()` circuit template uses, so a tree built here and a path checked in-circuit later agree. |
+
+A SHA-256 digest is 256 bits; Poseidon operates on BN254 scalar-field
+elements, which are slightly under 254 bits. So every digest is reduced
+`mod p` before use (`merkle/poseidon.mjs`). This throws away on the order of
+2 bits of a 256-bit digest — cryptographically irrelevant, and it's what
+lets the same number be re-used later as a circuit signal.
+
+## How the Merkle root commits to the dataset
+
+Leaves are combined pairwise, bottom-up: `parent = Poseidon(left, right)`,
+until one value — the root — remains. **Record order is part of the
+commitment**: the same records in a different order produce a different
+root (verified by test). This is intentional, not a limitation — Phase 3's
+sample indices are only meaningful relative to one fixed, agreed ordering.
+
+Padding: the tree needs a power-of-two leaf count. Unused slots are padded
+with the field element `0`, not a duplicated real leaf. Duplicating the last
+leaf is a well-known way to make two genuinely different datasets collide on
+the same root; using a fixed sentinel that a real SHA-256 digest can only
+hit with ~2⁻²⁵⁴ probability avoids that without adding a new algorithm to
+explain.
+
+**The same dataset always produces the same root** (`Merkle: same dataset
+always produces the same root`, verified across independent Node
+processes) — and **changing, reordering, or dropping any single record
+changes the root** (also directly tested).
+
+## Inclusion proofs
+
+`tree.getProof(index)` returns the leaf plus one `{sibling, isRight}` entry
+per tree level. `verifyInclusionProof(leaf, path, root)`
+(`merkle/merkleTree.mjs`) is the standalone check a verifier runs: it knows
+nothing about the rest of the dataset, only a claimed leaf, its path, and
+the published root, and recomputes Poseidon up to the top to see if it
+lands on that root.
+
+## Try it
+
+```bash
+cd zk
+node merkle/commitDataset.mjs data/sample_dataset.json
+```
+
+Reads the six-record **synthetic** demo dataset (`data/sample_dataset.json`
+— placeholder image hashes over synthetic content strings, not real patient
+data, clearly labeled as such in the file's generation) and writes:
+
+- `build/commitment.json` — the public commitment: root + one leaf hash per
+  record. This is what actually gets published/handed to a verifier.
+- `build/proofs.json` — an inclusion proof for every record. Materializing
+  *all* of them is a convenience for this demo and for tests; a real prover
+  computes a proof only for the specific indices Phase 3 selects, on
+  demand.
+
+## Tests
+
+`test/merkle.test.mjs` — canonicalization edge cases, plus the four cases
+the project brief calls for: a valid inclusion proof succeeds; a modified
+leaf fails; a modified root fails; a modified source record fails (because
+it changes the leaf it hashes to) — run with `npm test`.
+
 ## Roadmap
 
 | Phase | Status |
 |---|---|
 | 1. Toolchain sanity (`x*x=y`) | ✅ done |
-| 2. Merkle dataset commitment | not started |
+| 2. Merkle dataset commitment | ✅ done |
 | 3. Cryptographically bound sampling | not started |
 | 4. Evaluation pipeline | not started |
 | 5. Accuracy circuit (`correct*100 >= threshold*total`) | not started |
