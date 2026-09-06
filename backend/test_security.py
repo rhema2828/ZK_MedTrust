@@ -321,6 +321,13 @@ class GenerateProofEndpointTests(unittest.TestCase):
         self.assertIn("request_id", body)
         self.assertIn("ticket", body)
         self.assertEqual(resp.headers.get("X-Request-ID"), body["request_id"])
+        # PHASE 7: this is now a REAL Groth16 proof, not the old echo stub.
+        self.assertIn("proof", body)
+        self.assertEqual(body["proof"]["protocol"], "groth16")
+        self.assertIn("public_signals", body)
+        # correct_predictions (8) must never appear among the public signals -
+        # it is the circuit's one private input.
+        self.assertNotIn("8", body["public_signals"])
 
     def test_invalid_body_rejected(self):
         bad_body = {"claimed_accuracy": 80, "correct": 11, "total": 10}  # correct > total
@@ -328,6 +335,17 @@ class GenerateProofEndpointTests(unittest.TestCase):
             "/generate_proof", json=bad_body, headers={"X-API-Key": "test-api-key"}
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_unprovable_claim_returns_422_not_a_fake_proof(self):
+        # 5/10 = 50%, claiming 90% - passes validate_proof_request's range
+        # checks (all individually in-range) but the circuit's own
+        # constraint (the accuracy inequality itself) correctly refuses it.
+        unmeetable_body = {"claimed_accuracy": 90, "correct": 5, "total": 10}
+        resp = self.client.post(
+            "/generate_proof", json=unmeetable_body, headers={"X-API-Key": "test-api-key"}
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertNotIn("proof", resp.json())
 
     def test_health_and_predict_routes_unaffected(self):
         # /health takes no auth at all, exactly as before Phase 8.
@@ -343,6 +361,79 @@ class GenerateProofEndpointTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
         resp = self.client.post("/generate_proof", json=self.VALID_BODY, headers=headers)
         self.assertEqual(resp.status_code, 429)
+
+
+class VerifyProofEndpointTests(unittest.TestCase):
+    """PHASE 7: /verify_proof, against the real /generate_proof output."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            raise unittest.SkipTest("fastapi/httpx not installed - see zk/README.md Phase 8 setup")
+
+        import zk_proof
+
+        if not zk_proof.zk_toolchain_ready():
+            raise unittest.SkipTest(
+                "ZK toolchain not set up - run 'bash zk/scripts/phase5_accuracy.sh' first."
+            )
+
+        os.environ[security.API_KEY_ENV_VAR] = "test-api-key"
+        os.environ[security._TICKET_SECRET_ENV_VAR] = "test-ticket-secret"
+        cls.app_module = _import_app_with_mocked_model()
+        cls.client = TestClient(cls.app_module.app)
+
+    def setUp(self):
+        security._default_rate_limiter.reset()
+        security._seen_nonces.clear()
+
+    HEADERS = {"X-API-Key": "test-api-key"}
+
+    def _generate(self, body):
+        resp = self.client.post("/generate_proof", json=body, headers=self.HEADERS)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return resp.json()
+
+    def test_honest_proof_verifies_through_the_real_api(self):
+        generated = self._generate({"claimed_accuracy": 70, "correct": 8, "total": 10})
+        resp = self.client.post(
+            "/verify_proof",
+            json={"proof": generated["proof"], "public_signals": generated["public_signals"]},
+            headers=self.HEADERS,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"zk_verified": True})
+
+    def test_tampered_proof_returns_zk_verified_false(self):
+        generated = self._generate({"claimed_accuracy": 70, "correct": 8, "total": 10})
+        tampered_proof = dict(generated["proof"])
+        tampered_proof["pi_a"] = list(tampered_proof["pi_a"])
+        tampered_proof["pi_a"][0] = str(int(tampered_proof["pi_a"][0]) + 1)
+        resp = self.client.post(
+            "/verify_proof",
+            json={"proof": tampered_proof, "public_signals": generated["public_signals"]},
+            headers=self.HEADERS,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"zk_verified": False})
+
+    def test_tampered_public_signals_return_zk_verified_false(self):
+        generated = self._generate({"claimed_accuracy": 70, "correct": 8, "total": 10})
+        tampered_signals = list(generated["public_signals"])
+        tampered_signals[-1] = "5"  # claim threshold=5 instead of 70
+        resp = self.client.post(
+            "/verify_proof",
+            json={"proof": generated["proof"], "public_signals": tampered_signals},
+            headers=self.HEADERS,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"zk_verified": False})
+
+    def test_missing_api_key_rejected(self):
+        resp = self.client.post("/verify_proof", json={"proof": {}, "public_signals": []})
+        self.assertEqual(resp.status_code, 401)
 
 
 if __name__ == "__main__":

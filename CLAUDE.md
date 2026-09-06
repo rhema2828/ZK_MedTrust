@@ -159,27 +159,41 @@ to be rediscovered.
   limiting, input validation mirroring the circuit's own range checks, HMAC
   tickets carrying a nonce + a *hash* of the request payload (never the
   payload itself — no patient data in tickets), secure temp-file handling,
-  a model-integrity SHA-256 utility, and request IDs. `/generate_proof`'s
-  body is still the Phase 4-era echo stub; Phase 7 replaces the inner logic
-  without touching this gate again. 36/36 tests (`backend/test_security.py`),
-  including live `fastapi.testclient` calls against the real route.
-- **Phases 7, 9, 10 — not started.** Real `/generate_proof` body +
-  `/verify_proof` (now has a real circuit to call into, per Phase 6), the
-  full test matrix, and final docs. See the roadmap table at the bottom of
-  `zk/README.md` for current status.
+  a model-integrity SHA-256 utility, and request IDs. 36/36 tests
+  (`backend/test_security.py`), including live `fastapi.testclient` calls
+  against the real routes.
+- **Phase 7 — FastAPI integration.** `backend/zk_proof.py` bridges Python
+  to the real toolchain by shelling out to two one-shot Node CLIs
+  (`zk/witness/proveAccuracy.mjs`, `verifyAccuracy.mjs`) that call
+  `snarkjs.groth16.fullProve`/`.verify` directly — same JS-API pattern
+  `test/accuracy.test.mjs` already exercises, no new cryptographic code.
+  `/generate_proof` now returns a real Groth16 proof (`correct_predictions`
+  never appears in the response — it's the circuit's private input) or a
+  typed refusal: HTTP 422 if the claim is false (the circuit's constraints
+  correctly refuse to produce a witness — not a server error, no proof is
+  faked in its place), HTTP 503 if the one-time Groth16 setup hasn't been
+  run yet. New `POST /verify_proof` invokes the real verifier and returns
+  exactly `{"zk_verified": true|false}` — no code path produces `true`
+  without `snarkjs.groth16.verify()` itself agreeing. `/verify_proof`
+  deliberately isn't gated by `/generate_proof`'s ticket: verification is
+  meant to be re-checkable by anyone, any number of times (the whole point
+  of a portable proof) — nonce/replay protection belongs on proof
+  *creation*, not on checking one that already exists. 52 new tests
+  (`backend/test_zk_proof.py` + additions to `test_security.py`), all
+  against the real toolchain, all passing.
+- **Phase 9, 10 — not started.** The full test matrix and final docs. See
+  the roadmap table at the bottom of `zk/README.md` for current status.
 
 ## Not yet built
 
-- Real SnarkJS/circom proof generation *wired into the FastAPI backend* — the
-  cryptography itself works (`zk/`, Phases 1–6 above) and `/generate_proof`
-  now has a real security gate (Phase 8), but its body is still the original
-  echo stub and `/verify_proof` doesn't exist yet (Phase 7).
-- The `/generate_proof` payload needs rethinking once proofs are real — an accuracy
-  claim needs a labeled evaluation set, not one unlabeled prediction.
+- The `/generate_proof` payload still needs rethinking for a real accuracy claim
+  (a labeled evaluation set, not one caller-supplied correct/total pair) — Phase
+  7 wired the cryptography for real, but didn't change what the request
+  represents.
 - Any frontend (`streamlit` is in requirements.txt but unused so far). Its
   "Verify Proof" button (`frontend/streamlit_app.py:104`) currently just sets a
-  session flag on click — no real verification call. Needs fixing once
-  `/verify_proof` exists (Phase 10 of the zk/ roadmap).
+  session flag on click — no real verification call, even though `/verify_proof`
+  now exists for real (Phase 7). Needs fixing (Phase 10 of the zk/ roadmap).
 - Tests for the rest of `backend/` beyond `security.py` (`/predict`,
   `ml_inference.py`) — `zk/` and `backend/test_security.py` now have their
   own test suites (see above), but `/predict` itself still doesn't.

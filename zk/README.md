@@ -782,6 +782,140 @@ tripping the rate limit, `/health`/`/predict` unaffected). 36/36 passing.
 Run with `python -m unittest backend/test_security.py -v` from the repo
 root.
 
+# Phase 7 — FastAPI Integration
+
+Phase 7 is the last piece connecting the demo UI to real cryptography:
+`/generate_proof` and `/verify_proof` now call the real toolchain, not a
+stub. Preserves everything Phase 8 already built — same security gate,
+same route shape, only what happens *inside* the route changed.
+
+## Why a Python↔Node bridge
+
+The ZK toolchain (circom, snarkjs) is Node/JS — that's where Phases 1–6
+built and verified it. Rather than reimplementing any part of that in
+Python, `backend/zk_proof.py` shells out to two small one-shot Node CLIs
+that call snarkjs's JS API directly:
+
+- **`zk/witness/proveAccuracy.mjs`** — stdin `{correct, total, threshold}`,
+  stdout a real proof, or a clearly-typed error (see below). Requires the
+  circuit already compiled and Groth16 setup already run — a real
+  deployment's trusted setup happens **once, offline**, not per request;
+  this script deliberately does not run it itself.
+- **`zk/witness/verifyAccuracy.mjs`** — stdin `{proof, publicSignals}`,
+  stdout `{"zk_verified": true|false}`. Always exits 0: "did not verify"
+  (tampered proof, wrong signals, even malformed input) is a normal,
+  expected outcome, not an error condition.
+
+Both use the same `snarkjs.groth16.fullProve` / `snarkjs.groth16.verify`
+JS-API pattern `test/accuracy.test.mjs` already exercises — no new
+cryptographic code, just a new way of invoking the same, already-verified
+path.
+
+## `/generate_proof`, for real
+
+```
+authenticate + rate limit (Phase 8, unchanged)
+        |
+        v
+validate_proof_request (Phase 8, unchanged)
+        |
+        v
+generate_accuracy_proof(correct, total, threshold=claimed_accuracy)
+        |
+        v
+  real Groth16 proof, or a typed refusal:
+    - ClaimNotProvableError  -> HTTP 422 (the claim is false; no proof exists)
+    - ZkToolchainNotReadyError -> HTTP 503 (one-time setup not run yet)
+```
+
+`claimed_accuracy` is treated as the circuit's `threshold` signal — "I
+claim >= claimed_accuracy% accuracy." The existing request field name is
+kept as-is (preserving the API, per the brief), just given its real
+cryptographic meaning now that there's a real circuit to check it against.
+
+**A false claim returns 422, not a fake proof and not a 500.** This
+matters: the circuit's constraints mean witness generation itself fails
+for a false claim (see Phase 5/6) — there is no proof to hand back, and
+that refusal is the security property working, not a server error.
+
+Response now carries `proof` (a real Groth16 proof: `pi_a`, `pi_b`,
+`pi_c`, `protocol`, `curve`) and `public_signals` (`[valid,
+total_predictions, threshold]` — `correct_predictions` never appears,
+anywhere in the response), alongside the Phase 8 `request_id` and
+`ticket`.
+
+## `/verify_proof`, new
+
+```json
+POST /verify_proof
+{"proof": {...}, "public_signals": ["1", "10", "70"]}
+```
+
+Same auth + rate limit as `/generate_proof`. **Deliberately not gated by
+the `/generate_proof` ticket** — Groth16 verification is meant to be
+re-checkable by anyone, any number of times (that is the entire point of
+a public, portable proof). Nonce/replay protection belongs on the request
+that *creates* a proof, not on checking one that already exists;
+gating verification with one-time-use semantics would make proofs
+useless for the auditing use case this whole project is for.
+
+Always returns exactly `{"zk_verified": true}` or `{"zk_verified":
+false}` — nothing else, and there is no code path that produces `true`
+without the real `snarkjs.groth16.verify()` call agreeing. A tampered
+proof, tampered public signals, or a well-formed proof checked against
+the wrong claim's signals all correctly return `false`, not an error.
+
+## Try it
+
+```bash
+export ZK_API_KEY=dev-demo-key-change-me
+export ZK_TICKET_SECRET=dev-demo-secret-change-me
+python backend/app.py
+```
+
+```bash
+# generate a real proof
+curl -s -X POST localhost:8000/generate_proof \
+  -H "Content-Type: application/json" -H "X-API-Key: dev-demo-key-change-me" \
+  -d '{"claimed_accuracy": 70, "correct": 8, "total": 10}' | tee /tmp/gp.json
+
+# verify it for real
+python3 -c "
+import json, requests
+r = json.load(open('/tmp/gp.json'))
+resp = requests.post('http://localhost:8000/verify_proof',
+    headers={'X-API-Key': 'dev-demo-key-change-me'},
+    json={'proof': r['proof'], 'public_signals': r['public_signals']})
+print(resp.json())   # {'zk_verified': True}
+"
+```
+
+## Tests
+
+- `backend/test_zk_proof.py` — the Python↔Node bridge directly, against
+  the real toolchain (self-skips if the one-time setup hasn't run):
+  valid claim produces a real proof (with `correct_predictions` absent
+  from the public signals), the exact-boundary case (`70/100 >= 70%`)
+  succeeds, false/out-of-range claims raise `ClaimNotProvableError`;
+  verification of an honest proof succeeds, a tampered proof/public
+  signal/malformed input all correctly return `False` without raising, a
+  proof from one claim doesn't verify against a different claim's
+  signals. 11 tests.
+- `backend/test_security.py`'s `GenerateProofEndpointTests` /
+  `VerifyProofEndpointTests` — the real routes end-to-end via
+  `fastapi.testclient`: a valid claim gets a real proof back (protocol
+  `groth16`, `correct_predictions` absent from the response), an
+  unmeetable claim returns 422 with no proof in the body, `/verify_proof`
+  round-trips an honest proof to `zk_verified: true` and a tampered
+  proof/signal to `false`, both routes still require the API key. 41
+  tests total in this file.
+
+Run with `python -m unittest backend/test_zk_proof.py backend/test_security.py -v`
+from the repo root (needs the one-time Groth16 setup run first — see Phase
+5/6's "Try it" sections).
+
+---
+
 ## Roadmap
 
 | Phase | Status |
@@ -792,7 +926,7 @@ root.
 | 4. Evaluation pipeline | ✅ done, verified end-to-end against the real model (see Phase 4 setup) |
 | 5. Accuracy circuit (`correct*100 >= threshold*total`) | ✅ done |
 | 6. Merkle + sampling + ZK wiring | ✅ done, verified end-to-end against real evaluation output (both the correctly-rejected and correctly-verified cases) |
-| 7. FastAPI `/generate_proof` + `/verify_proof` | not started — `/generate_proof`'s security gate exists (Phase 8), but its body is still the echo stub; `/verify_proof` doesn't exist yet |
-| 8. Security layer | ✅ done, scoped to `/generate_proof` |
+| 7. FastAPI `/generate_proof` + `/verify_proof` | ✅ done — real Groth16 proofs, real verification, both live in the running API |
+| 8. Security layer | ✅ done, scoped to `/generate_proof` + `/verify_proof` |
 | 9. Full test matrix | partial — see each phase's own Tests section |
 | 10. Documentation | not started |
