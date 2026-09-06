@@ -1,38 +1,38 @@
 [
   {
     "record_id": "SYN-001",
-    "image_sha256": "8c74ab0a7b7aa54d2c6151f8a3290df147e4ed84b22f66d27429a52651be22a4",
+    "image_sha256": "114e3ab4259506a0472263bd92863130a435d833ecc2af5634a489857465f5d5",
     "ground_truth": "Normal",
-    "dataset_version": "phase2-synthetic-demo-v1"
+    "dataset_version": "phase2-synthetic-demo-v2"
   },
   {
     "record_id": "SYN-002",
-    "image_sha256": "7d7cc06e2a5ec0a1e3b92cd9386a30d405d06ee0f328388e2a1624929bdc5bad",
+    "image_sha256": "28a2666d15f1f3cfa382f345f944e04ab3933da46a6d1aafd24fa841feee868c",
     "ground_truth": "Abnormal",
-    "dataset_version": "phase2-synthetic-demo-v1"
+    "dataset_version": "phase2-synthetic-demo-v2"
   },
   {
     "record_id": "SYN-003",
-    "image_sha256": "eadb6a0c7f015f43e72207be3eb71d1fb45a96fcaed59c7e3700f8c4bf663c17",
+    "image_sha256": "61a91e0d6e2071a1372c297ab390ad8e6165d932829afde101e5aef10376210d",
     "ground_truth": "Normal",
-    "dataset_version": "phase2-synthetic-demo-v1"
+    "dataset_version": "phase2-synthetic-demo-v2"
   },
   {
     "record_id": "SYN-004",
-    "image_sha256": "bd51980bc42701578a442fae33433f710c6bd47cbad2003823264a976c323172",
+    "image_sha256": "9b65bfaddb00a23b4247b3bcb7ac2e09fbba3c769ffe09356a57adaa80255b94",
     "ground_truth": "Normal",
-    "dataset_version": "phase2-synthetic-demo-v1"
+    "dataset_version": "phase2-synthetic-demo-v2"
   },
   {
     "record_id": "SYN-005",
-    "image_sha256": "08954d29e78f26bd76d45c9775e6004f9ccf70d53c4b1faa586cfe6202da7960",
+    "image_sha256": "a7fba0841842ff13309c76202430d96b5ec37cf9c23a8dd3be39d7f597af0c3b",
     "ground_truth": "Abnormal",
-    "dataset_version": "phase2-synthetic-demo-v1"
+    "dataset_version": "phase2-synthetic-demo-v2"
   },
   {
     "record_id": "SYN-006",
-    "image_sha256": "58360e44204e42c626c8a1c1a4de38581f5013f8b68e66a2d03290f1ecc2eb5f",
+    "image_sha256": "0a9afc269875d4a33cceb951746c027bde14aef7998fbd1df7afdc3782f9101f",
     "ground_truth": "Abnormal",
-    "dataset_version": "phase2-synthetic-demo-v1"
+    "dataset_version": "phase2-synthetic-demo-v2"
   }
 ]

@@ -165,7 +165,9 @@ zk/
 ├── scripts/                    install, ceremony, demonstration
 ├── merkle/                     Phase 2: canonicalize, hash, tree, CLI
 ├── sampling/                   Phase 3: bound sample selection, CLI
-├── data/sample_dataset.json    Phase 2: synthetic demo dataset
+├── evaluation/                 Phase 4: runs the existing model, scores it (Python)
+├── data/sample_dataset.json    Phase 2/4: synthetic demo dataset
+├── data/images/                Phase 4: synthetic demo images
 ├── test/                       automated sanity + Merkle assertions
 ├── build/                      ALL generated — gitignored
 ├── package.json
@@ -376,6 +378,147 @@ dataset_version, index validity (unique, in-range, correct count), and
 `verifySelection` accepting the genuine selection while rejecting a
 swapped index, the wrong root, or the wrong length.
 
+---
+
+# Phase 4 — Evaluation Pipeline
+
+Phase 4 runs the **existing, unmodified** `MedicalDiagnosticsModel`
+(`backend/ml_inference.py`) over exactly the records Phase 3 selected, and
+turns its outputs into the `correct_predictions` / `total_predictions`
+numbers Phase 5's circuit will prove a threshold over. Nothing in
+`backend/` is changed by this phase — not one line.
+
+```
+build/selection.json (Phase 3)
+        |
+        v
+for each selected record:
+    re-verify the image file's SHA-256 against what Phase 2 committed to
+        |
+        v
+    MedicalDiagnosticsModel.predict(image)   <- the EXISTING model, as-is
+        |
+        v
+    compare prediction to ground_truth -> correct (0 or 1)
+        |
+        v
+correct_predictions, total_predictions  ->  build/evaluation.json
+```
+
+## Why Python, when Phases 1–3 are JavaScript
+
+The Merkle/sampling tooling is JS because it leans on `circomlibjs`'s
+Poseidon (Phase 2 explains why). Reusing the *existing* model means reusing
+*existing Python code* — `zk/evaluation/evaluate.py` imports
+`backend/ml_inference.py` exactly the way `backend/app.py` already does
+(`sys.path` + `import ml_inference` — `backend/` isn't a Python package,
+so this is the established pattern, not a new one). The two halves talk
+over the same plain-JSON files every other phase already uses
+(`build/selection.json` in, `build/evaluation.json` out) — no new protocol
+to explain.
+
+## Integrity check before inference
+
+Before a record's image is ever handed to the model,
+`verify_image_integrity()` recomputes its SHA-256 and compares it to the
+hash Phase 2's Merkle leaf for that record committed to. This is the same
+content-hash property the Merkle tree already encodes — checking it again,
+directly, right before inference means a record whose image file was
+swapped out **after** the commitment was published is refused outright,
+rather than being only theoretically catchable via a Merkle proof someone
+would have to think to check.
+
+## The synthetic demo dataset now has real images
+
+Phase 2's demo dataset originally used SHA-256 hashes of short text
+strings as placeholder `image_sha256` values (documented then as exactly
+that — placeholders, not real image content). Phase 4 needs the model to
+actually run on *something*, so `zk/evaluation/make_synthetic_images.py`
+generates six small SYNTHETIC images (a gradient background with a bright
+or dark rectangle — the same style as `ml_inference.py`'s own
+`_make_synthetic_xray()` self-test image) under `zk/data/images/`, and
+`zk/data/sample_dataset.json` was regenerated with their real SHA-256
+digests (`dataset_version` bumped to `phase2-synthetic-demo-v2` to mark the
+revision). The script is deterministic — re-running it reproduces
+byte-identical files, so the committed hashes never drift. **This changed
+the Merkle root** from Phase 2's original demo run — expected and correct,
+not a bug: the dataset's content genuinely changed, so the commitment
+correctly changed with it.
+
+`ground_truth` labels are assigned by hand in that same file — synthetic
+placeholders with no clinical basis, exactly like the images. Every place
+`correct_predictions` is reported says so.
+
+## ⚠ What this phase does and does not demonstrate
+
+Read this before quoting any accuracy number this phase produces.
+
+- **Real:** a real ONNX Runtime session, running the real (if untrained)
+  ResNet-18-shaped model, produces real, deterministic outputs, which get
+  compared and counted exactly the way real evaluation data would be. The
+  plumbing — selection → integrity check → inference → comparison →
+  aggregation — is genuine end to end.
+- **Not real:** the `ground_truth` labels being compared against are
+  synthetic placeholders assigned by hand, and (per `CLAUDE.md`) the
+  model's classification head is a randomly initialized, untrained
+  `Linear(512, 2)` layer. So `correct_predictions / total_predictions`
+  from this pipeline is **not a medically meaningful accuracy figure** —
+  it exercises the mechanism the way a real deployment eventually would,
+  nothing more.
+
+## Setup (one-time, needs network access this sandbox doesn't have)
+
+`MedicalDiagnosticsModel` exports `backend/models/resnet18.onnx` on first
+use by downloading **ImageNet-pretrained** ResNet-18 weights via
+torchvision from `download.pytorch.org`. In the sandbox this project was
+built in, that host (like `storage.googleapis.com` and `api.github.com` in
+Phase 1) is blocked by the environment's egress policy — confirmed blocked
+via direct `curl`, with Hugging Face checked and also blocked as a
+fallback mirror. This is an environment-specific network policy, not a
+code problem — no line in `backend/ml_inference.py` needs to change.
+
+```bash
+# one-time, only if backend/models/resnet18.onnx doesn't exist yet:
+pip install onnxruntime numpy pillow onnx torch torchvision
+python backend/ml_inference.py     # exports the model, runs the self-test
+```
+
+Once the model file exists, everything below runs with no network at all.
+
+## Try it
+
+```bash
+cd zk
+node merkle/commitDataset.mjs data/sample_dataset.json    # Phase 2
+node sampling/selectFromCommitment.mjs 3                  # Phase 3
+python evaluation/evaluate.py                              # Phase 4
+```
+
+Writes `build/evaluation.json` and prints a per-record breakdown
+(prediction vs. ground truth) plus the `correct_predictions` /
+`total_predictions` totals — with the synthetic-data warning printed
+directly above them, every run.
+
+## Tests
+
+`zk/evaluation/test_evaluate.py` (Python's built-in `unittest`, no extra
+test dependency — mirroring the "nothing beyond the runtime" approach the
+JS tests take with `node:test`):
+
+- `score_prediction` / `aggregate`: matching/non-matching/mixed/empty cases
+- `verify_image_integrity`: accepts a matching file, **rejects a file whose
+  content was swapped out from under a stored hash** (the core "a silently
+  changed record is caught" property), rejects a wrong hash outright
+- `load_dataset_by_record_id`: indexes correctly, rejects duplicate
+  `record_id`s
+- a real end-to-end integration test that runs the actual model — this one
+  **skips itself** (not a failure) when `onnxruntime` isn't installed or
+  `backend/models/resnet18.onnx` hasn't been exported yet, so the rest of
+  the suite stays runnable without the heavier setup above
+
+Run with `python -m unittest zk/evaluation/test_evaluate.py -v` from the
+repo root.
+
 ## Roadmap
 
 | Phase | Status |
@@ -383,7 +526,7 @@ swapped index, the wrong root, or the wrong length.
 | 1. Toolchain sanity (`x*x=y`) | ✅ done |
 | 2. Merkle dataset commitment | ✅ done |
 | 3. Cryptographically bound sampling | ✅ done |
-| 4. Evaluation pipeline | not started |
+| 4. Evaluation pipeline | ✅ code done, verified via unit tests; live model run pending network access (see Phase 4 setup) |
 | 5. Accuracy circuit (`correct*100 >= threshold*total`) | not started |
 | 6. Merkle + sampling + ZK wiring | not started |
 | 7. FastAPI `/generate_proof` + `/verify_proof` | not started |
