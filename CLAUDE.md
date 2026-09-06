@@ -45,14 +45,74 @@ Runtime session.
   **This is a stub** — no actual proof is generated yet.
 - `python backend/app.py` runs uvicorn on `0.0.0.0:8000`.
 
+## Zero-Knowledge Layer (`zk/`)
+
+Real Circom + SnarkJS + Groth16 work, being built in gated phases on branch
+`claude/zk-medtrust-layer-tgpnhs`. Full detail, algorithms, and "try it" commands
+are in `zk/README.md` — this is a summary of what exists so far so it doesn't have
+to be rediscovered.
+
+- **Phase 1 — toolchain sanity.** `zk/circuits/square.circom` proves `x*x=y`
+  (`x` private, `y` public). `zk/scripts/install_toolchain.sh` builds `circom`
+  v2.2.2 from source (not published to npm or crates.io, and GitHub Releases is
+  blocked in this sandbox, so `cargo install` from a pinned git tag is the install
+  path) and installs `snarkjs`. `zk/scripts/ptau.sh` generates a **local
+  development** Powers-of-Tau ceremony (the real Hermez file is blocked here too)
+  — loudly flagged everywhere as not a trusted setup. `zk/scripts/phase1_square.sh`
+  proves, verifies (pass), then tampers with the public input and the proof
+  separately and confirms both are rejected.
+- **Phase 2 — Merkle dataset commitment.** `zk/merkle/`: a record is exactly
+  `{record_id, image_sha256, ground_truth, dataset_version}` canonicalized to one
+  fixed string; leaf = SHA-256(canonical) reduced into the BN254 scalar field; tree
+  nodes combine with Poseidon (`circomlibjs` — same implementation circomlib's
+  circuit template uses, so a path built here still checks out inside a circuit
+  later). Padding uses the field element `0`, not a duplicated leaf (duplication
+  lets two different datasets collide on one root). `image_sha256` commits to
+  image *content*, not a path.
+- **Phase 3 — cryptographically bound sampling.** `zk/sampling/`: sample indices
+  are `SHA256(root | dataset_version | sample_size)` expanded with a counter —
+  deterministic from public values already on the commitment, so a prover can't
+  privately re-roll a sample until they get one they like. Documented limitation:
+  this stops re-rolling a *fixed, published* dataset; it doesn't by itself stop
+  shopping around for a different dataset before ever publishing a root (would
+  need an external randomness beacon — not implemented).
+- **Phase 4 — evaluation pipeline.** `zk/evaluation/evaluate.py` imports
+  `backend/ml_inference.py` unmodified (same `sys.path` + `import ml_inference`
+  pattern `app.py` already uses — `backend/` isn't a package) and runs the real
+  model over Phase 3's selected records, re-verifying each image's SHA-256 against
+  the Merkle commitment immediately before inference. `zk/data/sample_dataset.json`
+  now has **real** synthetic images (`zk/evaluation/make_synthetic_images.py`,
+  deterministic/reproducible) instead of Phase 2's original placeholder text-hash
+  stand-ins — `dataset_version` bumped to `phase2-synthetic-demo-v2` accordingly,
+  which intentionally changed the Merkle root. `ground_truth` labels are
+  hand-assigned synthetic placeholders; combined with the untrained head below,
+  `correct_predictions` from this pipeline is explicitly **not** a medically
+  meaningful figure — every place it's printed says so.
+  - **Blocked in this sandbox, not a code problem:** exporting
+    `backend/models/resnet18.onnx` needs `download.pytorch.org` (pretrained
+    ResNet-18 weights) which this environment's egress policy 403s (Hugging Face
+    checked too, also blocked). `zk/evaluation/test_evaluate.py`'s pure-logic
+    tests (comparison, aggregation, integrity check) all pass without it; the one
+    real-model integration test self-skips until the export succeeds somewhere
+    with network access to that host.
+- **Phases 5–10 — not started.** Accuracy circuit
+  (`correct*100 >= threshold*total`), wiring Merkle+sampling+ZK together, real
+  `/generate_proof` + `/verify_proof`, the security layer (API keys, rate
+  limiting, HMAC tickets), the full test matrix, and final docs. See the roadmap
+  table at the bottom of `zk/README.md` for current status.
+
 ## Not yet built
 
-- Real SnarkJS/circom proof generation behind `/generate_proof` (currently an echo
-  stub — see TODO in `app.py`).
-- Any frontend (`streamlit` is in requirements.txt but unused so far).
+- Real SnarkJS/circom proof generation *wired into the FastAPI backend* — the
+  cryptography itself works (`zk/`, Phases 1–3 above), but `/generate_proof` is
+  still the original echo stub and `/verify_proof` doesn't exist yet (Phase 7).
+- Any frontend (`streamlit` is in requirements.txt but unused so far). Its
+  "Verify Proof" button (`frontend/streamlit_app.py:104`) currently just sets a
+  session flag on click — no real verification call. Needs fixing once
+  `/verify_proof` exists (Phase 10 of the zk/ roadmap).
 - A trained (non-random) classification head — current predictions are structurally
   real but not diagnostically meaningful.
-- Tests.
+- Tests for `backend/` itself (`zk/` now has its own test suites — see above).
 
 ## Setup gotchas learned the hard way
 
@@ -60,6 +120,12 @@ Runtime session.
   (`pip install torch torchvision`, not in requirements.txt) to export the ONNX
   model, plus `onnx` (in requirements.txt) for `torch.onnx.export` to serialize it.
   Once `backend/models/resnet18.onnx` exists, neither is needed again.
+  - `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`
+    (the usual CPU-only instructions) fails in network-restricted sandboxes where
+    `download.pytorch.org` is blocked — plain `pip install torch torchvision`
+    (default PyPI index) works there instead. Either way, the *weights* download
+    inside `_export_model()` still needs `download.pytorch.org` reachable; no pip
+    index change works around that part.
 - `POST /predict` needs `python-multipart` installed or FastAPI raises at route
   registration time — it's in requirements.txt now.
 - `backend/models/*.onnx` and `data/*.png` are gitignored (generated artifacts, not
