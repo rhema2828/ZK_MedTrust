@@ -1,0 +1,3 @@
+backend/models/*.onnx
+data/*.png
+__pycache__/
