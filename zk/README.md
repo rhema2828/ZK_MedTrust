@@ -1,7 +1,7 @@
 # ZK_MedTrust — Zero-Knowledge Layer
 
 This directory holds the zero-knowledge proof system for ZK_MedTrust.
-It is being built in phases. **Phases 1-5 are complete; phases 6–10 are not built yet.**
+It is being built in phases. **Phases 1-9 are complete; Phase 10 (final documentation) is in progress.**
 
 ---
 
@@ -23,10 +23,11 @@ Every later phase depends on this being real rather than a mock.
 
 Read this before writing any claim about the project.
 
-- **It is not a medical claim.** The ResNet-18 head in
-  `backend/ml_inference.py` is *randomly initialised* (seed 42, untrained). The
-  model's `Normal`/`Abnormal` outputs are structurally real but not
-  diagnostically meaningful.
+- **It is not a clinically validated claim.** `backend/ml_inference.py` wraps
+  torchxrayvision's `densenet121-res224-all` — a real model trained on real
+  chest X-ray datasets (see `CLAUDE.md`) — but nothing here is validated for
+  diagnostic use. The model's `Normal`/`Abnormal` outputs are real, trained
+  predictions, not a clinical diagnosis.
 - **A ZK proof proves a mathematical statement, not the truth of its inputs.**
   Later phases will prove `correct * 100 >= threshold * total`. That proves
   arithmetic about supplied evaluation results. It does not prove the model is
@@ -125,8 +126,8 @@ nowhere in either file.
 
 `y` is written as a public *input* checked with `===` rather than as an output
 signal. That is deliberate: it is the same shape the Phase 5 accuracy circuit
-will have (`threshold` and `total` public, per-sample results private), so the
-pattern carries forward unchanged.
+has (`threshold` and `total_predictions` public, `correct_predictions`
+private), so the pattern carries forward unchanged.
 
 Compiled size: **1 non-linear constraint, 3 wires, 1 public input, 1 private input.**
 
@@ -459,11 +460,11 @@ placeholders with no clinical basis, exactly like the images. Every place
 
 Read this before quoting any accuracy number this phase produces.
 
-- **Real:** a real ONNX Runtime session, running the real (if untrained)
-  ResNet-18-shaped model, produces real, deterministic outputs, which get
-  compared and counted exactly the way real evaluation data would be. The
-  plumbing — selection → integrity check → inference → comparison →
-  aggregation — is genuine end to end.
+- **Real:** a real ONNX Runtime session, running the real, trained
+  torchxrayvision `densenet121-res224-all` model, produces real, deterministic
+  outputs, which get compared and counted exactly the way real evaluation data
+  would be. The plumbing — selection → integrity check → inference →
+  comparison → aggregation — is genuine end to end.
 - **Not real:** the `ground_truth` labels being compared against are
   synthetic placeholders assigned by hand. `backend/ml_inference.py` now
   wraps a real trained model (torchxrayvision's `densenet121-res224-all`,
