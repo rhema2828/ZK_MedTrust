@@ -141,23 +141,48 @@ to be rediscovered.
   verify this: a genuine 90%-vs-85% claim proves and verifies, all four
   violating cases fail at witness generation, and a post-hoc public-input
   tamper is rejected (43/43 JS tests passing overall).
-- **Phases 6–10 — not started.** Wiring Merkle+sampling+ZK together, real
-  `/generate_proof` + `/verify_proof`, the security layer (API keys, rate
-  limiting, HMAC tickets), the full test matrix, and final docs. See the roadmap
-  table at the bottom of `zk/README.md` for current status.
+- **Phase 6 — connecting Merkle + sampling + ZK.** `zk/witness/buildWitness.mjs`
+  turns Phase 4's real `correct_predictions`/`total_predictions` into Phase 5's
+  circuit input (`correct_predictions`, `total_predictions`, `threshold` —
+  the exact field names/public-private split `accuracy.circom` requires, not
+  a guess). `zk/scripts/phase6_pipeline.sh` runs the full chain against a real
+  evaluation run and correctly treats **both** outcomes as a pass: a claim the
+  real result meets proves and verifies; a claim it doesn't meet correctly
+  fails at witness generation (the circuit's hard-constraint guarantee, now
+  demonstrated against real data instead of Phase 5's hand-typed numbers) —
+  verified in both directions. `zk/README.md`'s Phase 6 section states plainly
+  which properties are circuit-enforced (only the accuracy inequality) vs.
+  protocol-enforced (image integrity, Merkle inclusion, sampling determinism).
+- **Phase 8 — security layer.** `backend/security.py`, scoped to
+  `/generate_proof` only (`/predict`/`/health` untouched): API key
+  (`hmac.compare_digest`, fails closed if unconfigured), in-memory rate
+  limiting, input validation mirroring the circuit's own range checks, HMAC
+  tickets carrying a nonce + a *hash* of the request payload (never the
+  payload itself — no patient data in tickets), secure temp-file handling,
+  a model-integrity SHA-256 utility, and request IDs. `/generate_proof`'s
+  body is still the Phase 4-era echo stub; Phase 7 replaces the inner logic
+  without touching this gate again. 36/36 tests (`backend/test_security.py`),
+  including live `fastapi.testclient` calls against the real route.
+- **Phases 7, 9, 10 — not started.** Real `/generate_proof` body +
+  `/verify_proof` (now has a real circuit to call into, per Phase 6), the
+  full test matrix, and final docs. See the roadmap table at the bottom of
+  `zk/README.md` for current status.
 
 ## Not yet built
 
 - Real SnarkJS/circom proof generation *wired into the FastAPI backend* — the
-  cryptography itself works (`zk/`, Phases 1–3 above), but `/generate_proof` is
-  still the original echo stub and `/verify_proof` doesn't exist yet (Phase 7).
+  cryptography itself works (`zk/`, Phases 1–6 above) and `/generate_proof`
+  now has a real security gate (Phase 8), but its body is still the original
+  echo stub and `/verify_proof` doesn't exist yet (Phase 7).
 - The `/generate_proof` payload needs rethinking once proofs are real — an accuracy
   claim needs a labeled evaluation set, not one unlabeled prediction.
 - Any frontend (`streamlit` is in requirements.txt but unused so far). Its
   "Verify Proof" button (`frontend/streamlit_app.py:104`) currently just sets a
   session flag on click — no real verification call. Needs fixing once
   `/verify_proof` exists (Phase 10 of the zk/ roadmap).
-- Tests for `backend/` itself (`zk/` now has its own test suites — see above).
+- Tests for the rest of `backend/` beyond `security.py` (`/predict`,
+  `ml_inference.py`) — `zk/` and `backend/test_security.py` now have their
+  own test suites (see above), but `/predict` itself still doesn't.
 
 ## Setup gotchas learned the hard way
 
