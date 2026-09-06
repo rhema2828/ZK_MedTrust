@@ -519,6 +519,78 @@ JS tests take with `node:test`):
 Run with `python -m unittest zk/evaluation/test_evaluate.py -v` from the
 repo root.
 
+---
+
+# Phase 6 — connecting Merkle + Sampling + ZK (scaffolding)
+
+Phase 5 (the accuracy circuit itself, `zk/circuits/accuracy.circom`) is being
+built independently — this repo may or may not have it yet depending on when
+you're reading this (check `zk/circuits/`). Phase 6 builds everything *up to*
+that circuit, so the moment it lands, wiring it in is a small, contained
+change rather than a redesign.
+
+```
+build/commitment.json (Phase 2: Merkle root)
+        |
+        v
+build/selection.json (Phase 3: bound sample indices)
+        |
+        v
+build/evaluation.json (Phase 4: correct_predictions / total_predictions)
+        |
+        v
+witness/buildWitness.mjs --threshold N
+        |
+        v
+build/accuracy_input.json = {"correct": N, "total": M, "threshold": T}
+        |
+        v
+   [circuits/accuracy.circom - PENDING]
+        |
+        v
+   Groth16 setup -> prove -> verify
+```
+
+## What's ZK-enforced vs. what's protocol-enforced
+
+The brief is explicit that this distinction has to be stated plainly, not
+implied. As of Phase 6:
+
+| Property | Enforced by |
+|---|---|
+| `correct*100 >= threshold*total` arithmetic | **the circuit**, once it exists — this is the actual trustless guarantee |
+| `0 < total`, `0 <= correct <= total`, `0 <= threshold <= 100` | checked twice: once as an ordinary-code guardrail in `witnessBuilder.mjs` (fail-fast for the honest path — trivially bypassable by a prover on their own machine), and once for real inside the circuit's constraints once it exists |
+| the image a prediction was made on matches what the Merkle leaf committed to | `evaluation/evaluate.py`'s `verify_image_integrity()` — ordinary code, not the circuit |
+| sample selection can't be re-rolled for a favorable subset | `sampling/selectSamples.mjs`'s deterministic derivation from the published root — ordinary code, not the circuit |
+| the evaluation set can't be silently altered after publishing its root | the Merkle tree itself (`merkle/merkleTree.mjs`) — cryptographic, but via hash commitment, not Groth16 |
+
+Only the first row is a ZK-SNARK guarantee. Everything else is real, but it's
+"ordinary code checked a hash/determinism property," not "a proof system
+verified it" — conflating the two is exactly what the brief's Phase 6
+instructions warn against.
+
+## `witness/`
+
+- **`witnessBuilder.mjs`** — pure function `buildAccuracyWitness({correct,
+  total, threshold})`, validated and unit-tested independent of any file I/O.
+- **`buildWitness.mjs`** — CLI: `node witness/buildWitness.mjs --threshold N`
+  reads `build/evaluation.json`, writes `build/accuracy_input.json`.
+- **`scripts/phase6_pipeline.sh`** — runs the whole chain above in one
+  command. If `circuits/accuracy.circom` is missing (current state), it
+  prints a `PENDING` status for that step and exits 0 — an accurate
+  description of the repo's current state, not an error. If the circuit is
+  present, it's expected to run the real setup/prove/verify chain (not yet
+  implemented — wire it the same shape `scripts/phase1_square.sh` already
+  demonstrates, once the circuit's actual template/signal names are known).
+
+## Tests
+
+`test/witness.test.mjs` — valid input passes through; rejects `total=0`,
+negative `total`, `correct > total`, negative `correct`, `threshold` outside
+`[0,100]`, and non-integer inputs; boundary cases (`correct=0`,
+`correct=total`) accepted; `meetsThreshold()` matches the circuit's intended
+inequality including the exact-boundary case.
+
 ## Roadmap
 
 | Phase | Status |
@@ -527,9 +599,9 @@ repo root.
 | 2. Merkle dataset commitment | ✅ done |
 | 3. Cryptographically bound sampling | ✅ done |
 | 4. Evaluation pipeline | ✅ code done, verified via unit tests; live model run pending network access (see Phase 4 setup) |
-| 5. Accuracy circuit (`correct*100 >= threshold*total`) | not started |
-| 6. Merkle + sampling + ZK wiring | not started |
+| 5. Accuracy circuit (`correct*100 >= threshold*total`) | in progress (separate branch/machine) |
+| 6. Merkle + sampling + ZK wiring | ✅ scaffolding done (witness assembly + orchestration); final circuit wiring pending Phase 5 |
 | 7. FastAPI `/generate_proof` + `/verify_proof` | not started |
-| 8. Security layer | not started |
-| 9. Full test matrix | not started |
-| 10. Documentation | not started |
+| 8. Security layer | ✅ done (API key, rate limiting, input validation, HMAC tickets w/ nonce+TTL, temp-file security, model-integrity check) — wired onto the existing `/generate_proof` stub; real proof logic still pending Phase 7 |
+| 9. Full test matrix | partial — see each phase's own Tests section |
+| 10. Documentation | in progress (this file + `CLAUDE.md`) |
