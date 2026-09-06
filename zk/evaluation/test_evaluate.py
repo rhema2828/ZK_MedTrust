@@ -119,11 +119,14 @@ class RealModelIntegrationTest(unittest.TestCase):
             self.skipTest("onnxruntime not installed - see zk/README.md Phase 4 setup")
 
         zk_dir = Path(__file__).resolve().parent.parent
-        model_path = zk_dir.parent / "backend" / "models" / "resnet18.onnx"
-        if not model_path.exists():
+        backend_dir = zk_dir.parent / "backend"
+        sys.path.insert(0, str(backend_dir))
+        from ml_inference import MODEL_PATH  # noqa: E402
+
+        if not MODEL_PATH.exists():
             self.skipTest(
-                "backend/models/resnet18.onnx not exported yet - run "
-                "`python backend/ml_inference.py` first (needs torch+torchvision "
+                f"{MODEL_PATH} not exported yet - run "
+                "`python backend/ml_inference.py` first (needs torchxrayvision "
                 "one-time, per CLAUDE.md)"
             )
 

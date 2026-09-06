@@ -1,7 +1,7 @@
 # ZK_MedTrust — Zero-Knowledge Layer
 
 This directory holds the zero-knowledge proof system for ZK_MedTrust.
-It is being built in phases. **Phase 1 is complete; phases 2–10 are not built yet.**
+It is being built in phases. **Phases 1-5 are complete; phases 6–10 are not built yet.**
 
 ---
 
@@ -459,27 +459,25 @@ Read this before quoting any accuracy number this phase produces.
   plumbing — selection → integrity check → inference → comparison →
   aggregation — is genuine end to end.
 - **Not real:** the `ground_truth` labels being compared against are
-  synthetic placeholders assigned by hand, and (per `CLAUDE.md`) the
-  model's classification head is a randomly initialized, untrained
-  `Linear(512, 2)` layer. So `correct_predictions / total_predictions`
-  from this pipeline is **not a medically meaningful accuracy figure** —
-  it exercises the mechanism the way a real deployment eventually would,
-  nothing more.
+  synthetic placeholders assigned by hand. `backend/ml_inference.py` now
+  wraps a real trained model (torchxrayvision's `densenet121-res224-all`,
+  see `CLAUDE.md`), so `correct_predictions / total_predictions` from this
+  pipeline still is **not a medically meaningful accuracy figure** — but
+  now only because the synthetic images and hand-assigned ground truth
+  aren't real diagnoses, not because the model itself is untrained.
 
-## Setup (one-time, needs network access this sandbox doesn't have)
+## Setup (one-time)
 
-`MedicalDiagnosticsModel` exports `backend/models/resnet18.onnx` on first
-use by downloading **ImageNet-pretrained** ResNet-18 weights via
-torchvision from `download.pytorch.org`. In the sandbox this project was
-built in, that host (like `storage.googleapis.com` and `api.github.com` in
-Phase 1) is blocked by the environment's egress policy — confirmed blocked
-via direct `curl`, with Hugging Face checked and also blocked as a
-fallback mirror. This is an environment-specific network policy, not a
-code problem — no line in `backend/ml_inference.py` needs to change.
+`MedicalDiagnosticsModel` exports `backend/models/densenet121_xrv.onnx` on
+first use by downloading torchxrayvision's pretrained `densenet121-res224-all`
+weights. This has been confirmed working on this machine (network access to
+that model's host is not blocked here, unlike the sandbox this ZK layer was
+originally built in).
 
 ```bash
-# one-time, only if backend/models/resnet18.onnx doesn't exist yet:
-pip install onnxruntime numpy pillow onnx torch torchvision
+# one-time, only if backend/models/densenet121_xrv.onnx doesn't exist yet:
+pip install -r ../backend/requirements.txt
+pip install torchxrayvision
 python backend/ml_inference.py     # exports the model, runs the self-test
 ```
 
@@ -512,12 +510,99 @@ JS tests take with `node:test`):
 - `load_dataset_by_record_id`: indexes correctly, rejects duplicate
   `record_id`s
 - a real end-to-end integration test that runs the actual model — this one
-  **skips itself** (not a failure) when `onnxruntime` isn't installed or
-  `backend/models/resnet18.onnx` hasn't been exported yet, so the rest of
-  the suite stays runnable without the heavier setup above
+  **skips itself** (not a failure) when `onnxruntime` isn't installed or the
+  model file (`ml_inference.MODEL_PATH`) hasn't been exported yet, so the
+  rest of the suite stays runnable without the heavier setup above
 
 Run with `python -m unittest zk/evaluation/test_evaluate.py -v` from the
 repo root.
+
+---
+
+# Phase 5 — Accuracy ZK Circuit
+
+## The statement being proven
+
+`circuits/accuracy.circom` proves:
+
+```
+correct_predictions * 100 >= threshold * total_predictions
+```
+
+i.e. "accuracy >= threshold%". This is a **threshold** proof, not an
+equality proof — the task brief is explicit that proving
+`correct * 100 == claimed_accuracy * total` would be the wrong shape,
+since equality only proves one exact accuracy figure, not "at least X%".
+
+## Public vs. private inputs
+
+| Signal | Public? | Why |
+|---|---|---|
+| `total_predictions` | **Public** | Already public: it's Phase 3's `sample_size`, itself derived from the public Merkle root. If it were private here instead, a prover could claim `total_predictions = 1` and trivially satisfy any threshold — making the whole proof vacuous. |
+| `threshold` | **Public** | It *is* the claim. A verifier who doesn't know what threshold was met can't check anything. |
+| `correct_predictions` | **Private** | The one number this circuit exists to hide. Only its relationship to the (public) total and threshold is proven, not its value. |
+
+**Documented limitation:** at small sample sizes, "private" narrows the
+search space rather than hiding it — with `total_predictions = 3`, there
+are only 4 possible values for `correct_predictions`. This is inherent to
+proving a ratio over a small public denominator, not a flaw in the circuit
+itself; it gets less significant as the evaluation sample grows (Phase 6+
+territory).
+
+## Enforced constraints
+
+- `0 < total_predictions`
+- `0 <= correct_predictions <= total_predictions`
+- `0 <= threshold <= 100`
+- `correct_predictions * 100 >= threshold * total_predictions`
+
+All four are **hard constraints** — violating any of them means no witness
+exists at all, not "a witness exists but the resulting proof fails
+verification". A false accuracy claim cannot be proven, period.
+
+## A circom footgun this circuit deliberately avoids
+
+circomlib's `LessThan(n)` (and everything built on it — `LessEqThan`,
+`GreaterThan`, `GreaterEqThan`) is only sound when both compared values are
+already known to fit within `n` bits. It works by decomposing
+`in[0] + 2^n - in[1]` into `n+1` bits; feed it an unconstrained value near
+the field's modulus and that subtraction can wrap around and produce a
+misleading result. Every value this circuit compares
+(`correct_predictions`, `total_predictions`, `threshold`) is explicitly
+range-checked with `Num2Bits(32)` **before** it ever reaches a comparator.
+Skipping this step is a well-known class of circom bug, not a
+hypothetical one — see `circuits/accuracy.circom`'s header comment for the
+full reasoning.
+
+## Try it
+
+```bash
+cd zk
+npm run phase5
+# or directly:
+bash scripts/phase5_accuracy.sh
+```
+
+Compiles the circuit, runs Groth16 setup (reusing the same `pot12` ceremony
+Phase 1 uses — 256 constraints comfortably fits a 2^12 setup), then:
+
+1. proves and verifies a genuine 90%-accuracy claim against an 85% threshold
+   (PASS)
+2. attempts witness generation for four constraint-violating cases —
+   accuracy below threshold, `correct > total`, `total = 0`, `threshold >
+   100` — and confirms each one **fails to even produce a witness** (PASS)
+3. tampers with a valid proof's public threshold after the fact, for parity
+   with Phase 1's approach, and confirms verification rejects it (PASS)
+
+## Tests
+
+`test/accuracy.test.mjs` (same `node:test` + snarkjs-JS-API pattern as
+`test/square.test.mjs`): a valid claim verifies with `correct_predictions`
+absent from the public signals, tampering with the public threshold or the
+proof itself is rejected, and each of the four constraint-violating cases
+throws during witness generation. Run via `npm test` (needs
+`bash scripts/phase5_accuracy.sh` run at least once first, to produce the
+build artifacts).
 
 ## Roadmap
 
@@ -526,8 +611,8 @@ repo root.
 | 1. Toolchain sanity (`x*x=y`) | ✅ done |
 | 2. Merkle dataset commitment | ✅ done |
 | 3. Cryptographically bound sampling | ✅ done |
-| 4. Evaluation pipeline | ✅ code done, verified via unit tests; live model run pending network access (see Phase 4 setup) |
-| 5. Accuracy circuit (`correct*100 >= threshold*total`) | not started |
+| 4. Evaluation pipeline | ✅ done, verified end-to-end against the real model (see Phase 4 setup) |
+| 5. Accuracy circuit (`correct*100 >= threshold*total`) | ✅ done |
 | 6. Merkle + sampling + ZK wiring | not started |
 | 7. FastAPI `/generate_proof` + `/verify_proof` | not started |
 | 8. Security layer | not started |
