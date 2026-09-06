@@ -1,24 +1,28 @@
 /*
- * PHASE 6 - witness assembly (scaffolding, not the accuracy circuit itself).
+ * PHASE 6 - witness assembly for the REAL accuracy circuit.
  *
- * Phase 5's circuit (built separately - see zk/README.md's Phase 6 section
- * for current status) will prove:
+ * circuits/accuracy.circom (Phase 5) proves:
  *
  *     correct_predictions * 100 >= threshold * total_predictions
  *
- * with `correct`/`total` PRIVATE and `threshold` PUBLIC. That signal shape
- * is already fully specified by the project brief, so this module builds
- * exactly the witness input a circuit with that shape expects, from Phase
- * 4's evaluation output - independent of whether the circuit file has
- * landed in this checkout yet.
+ * Signal names and public/private split come directly from that circuit -
+ * see its header comment for the full rationale:
  *
- * buildAccuracyWitness() also enforces the same three range checks the
- * circuit itself will enforce (0 < total, 0 <= correct <= total,
- * 0 <= threshold <= 100). IMPORTANT: this is a fail-fast guardrail for the
- * honest path, not a security boundary - it runs as ordinary JS, so a
- * prover who controls their own machine can bypass it trivially. The
- * circuit's constraints are what actually make these bounds trustless once
- * it exists. See zk/README.md.
+ *   correct_predictions  - PRIVATE
+ *   total_predictions    - PUBLIC (already public via Phase 3's sample_size;
+ *                           making it private would let a prover claim
+ *                           total_predictions=1 to trivially clear any bar)
+ *   threshold             - PUBLIC (it IS the claim being verified)
+ *
+ * buildAccuracyWitness() also enforces the same four checks the circuit's
+ * constraints enforce (0 < total, 0 <= correct <= total, 0 <= threshold <=
+ * 100, and optionally the threshold inequality itself via meetsThreshold).
+ * IMPORTANT: this is a fail-fast guardrail for the honest path, not a
+ * security boundary - it runs as ordinary JS, so a prover who controls
+ * their own machine can bypass it trivially. The circuit's constraints are
+ * what actually make these bounds trustless: witness generation for a
+ * violating input doesn't just get rejected later, it cannot happen at
+ * all (see circuits/accuracy.circom and scripts/phase5_accuracy.sh).
  */
 
 const SCALE = 100;
@@ -46,14 +50,19 @@ export function buildAccuracyWitness({ correct, total, threshold }) {
     throw new Error(`threshold must satisfy 0 <= threshold <= ${SCALE}, got ${threshold}`);
   }
 
-  return { correct, total, threshold };
+  // Exact field names circuits/accuracy.circom's generated witness
+  // calculator expects - see zk/scripts/phase5_accuracy.sh's make_input().
+  return {
+    correct_predictions: correct,
+    total_predictions: total,
+    threshold,
+  };
 }
 
-/** Convenience: does this (correct, total, threshold) satisfy the claim,
- * the same integer arithmetic the circuit will check? Useful for a CLI to
- * warn a prover *before* they burn a Groth16 setup on a witness that could
- * never satisfy the circuit's constraints - still not itself a security
- * boundary, same caveat as above. */
+/** Does (correct, total, threshold) satisfy the claim - the same integer
+ * arithmetic the circuit checks? Useful to warn a prover *before* they
+ * spend a witness-generation attempt on a claim the circuit will refuse
+ * to even produce a witness for. Still not a security boundary itself. */
 export function meetsThreshold({ correct, total, threshold }) {
   return correct * SCALE >= threshold * total;
 }

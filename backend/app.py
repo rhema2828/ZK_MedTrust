@@ -17,6 +17,13 @@ from security import (
     require_api_key,
     validate_proof_request,
 )
+from zk_proof import (
+    ClaimNotProvableError,
+    ZkToolchainNotReadyError,
+    generate_accuracy_proof,
+    verify_accuracy_proof,
+    zk_toolchain_ready,
+)
 
 app = FastAPI()
 
@@ -35,6 +42,11 @@ class ProofRequest(BaseModel):
     claimed_accuracy: int
     correct: int
     total: int
+
+
+class VerifyProofRequest(BaseModel):
+    proof: dict
+    public_signals: list[str]
 
 
 @app.get("/health")
@@ -70,28 +82,56 @@ def generate_proof(
     _rate_limit: None = Depends(enforce_rate_limit),
 ):
     # PHASE 8: authentication, rate limiting, and input validation guard this
-    # route. The body below is still the original Phase 4-era echo stub - no
-    # real SnarkJS proof is generated yet (that's Phase 7, which needs the
-    # accuracy circuit from Phase 5/6 first). This gate is deliberately built
-    # to survive that swap unchanged: Phase 7 replaces what happens AFTER
-    # validate_proof_request() succeeds, not the security checks before it.
+    # route, unchanged since Phase 7 replaced only what happens after they
+    # succeed.
+    #
+    # PHASE 7: claimed_accuracy IS the threshold being claimed - "I claim
+    # >= claimed_accuracy% accuracy" - matching circuits/accuracy.circom's
+    # `threshold` signal. The existing request field name is kept as-is
+    # (preserving the API), just given its real meaning now that there is
+    # a real circuit to check it against.
     validate_proof_request(request.claimed_accuracy, request.correct, request.total)
 
     request_id = new_request_id()
     response.headers["X-Request-ID"] = request_id
+
+    if not zk_toolchain_ready():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ZK toolchain not initialized - the one-time Groth16 setup for "
+                "circuits/accuracy.circom hasn't been run. See zk/README.md's "
+                "Phase 5/6 sections (bash scripts/phase5_accuracy.sh or "
+                "scripts/phase6_pipeline.sh)."
+            ),
+        )
+
+    try:
+        result = generate_accuracy_proof(
+            correct=request.correct, total=request.total, threshold=request.claimed_accuracy
+        )
+    except ClaimNotProvableError as exc:
+        # The circuit's constraints correctly refused this claim - there is
+        # no proof to generate for a false statement. This is the security
+        # property working, not a server error: 422, not 500.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No proof can be generated: {request.correct}/{request.total} does not "
+                f"meet the claimed {request.claimed_accuracy}% threshold, or the inputs "
+                f"violate the circuit's range constraints ({exc})."
+            ),
+        ) from exc
+    except ZkToolchainNotReadyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     payload = {
         "correct": request.correct,
         "total": request.total,
         "claimed_accuracy": request.claimed_accuracy,
     }
-    # TODO: hook real SnarkJS proof generation here (Phase 7).
-    proof = dict(payload)
-
     # Ticket binds this specific (hashed) request to a short-lived, signed,
-    # replay-protected token - never the request content itself. Not yet
-    # consumed anywhere (no /verify_proof exists yet - Phase 7), but issuing
-    # it here demonstrates the mechanism live and end-to-end testable.
+    # replay-protected token - never the request content itself.
     try:
         ticket = issue_ticket(payload, ttl_seconds=300)
     except RuntimeError as exc:
@@ -101,11 +141,48 @@ def generate_proof(
 
     return {
         "status": "success",
-        "proof": proof,
+        "proof": result["proof"],
+        "public_signals": result["publicSignals"],
         "claimed_accuracy": request.claimed_accuracy,
         "request_id": request_id,
         "ticket": ticket,
     }
+
+
+@app.post("/verify_proof")
+def verify_proof(
+    request: VerifyProofRequest,
+    response: Response,
+    api_key: str = Depends(require_api_key),
+    _rate_limit: None = Depends(enforce_rate_limit),
+):
+    # Same security gate as /generate_proof. Deliberately NOT gated by the
+    # /generate_proof ticket: Groth16 verification is meant to be re-checkable
+    # by anyone, any number of times (that's the point of a public proof) -
+    # nonce/replay protection belongs on the request that CREATES a proof,
+    # not on checking one that already exists.
+    request_id = new_request_id()
+    response.headers["X-Request-ID"] = request_id
+
+    if not zk_toolchain_ready():
+        raise HTTPException(
+            status_code=503,
+            detail="ZK toolchain not initialized - see /generate_proof's same check.",
+        )
+
+    try:
+        verified = verify_accuracy_proof(request.proof, request.public_signals)
+    except ZkToolchainNotReadyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # The verifier tool itself broke (not "proof didn't verify" - that
+        # returns False cleanly from verify_accuracy_proof, it never raises
+        # for that case). This is a real 500: something is actually wrong.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Exactly the shape the brief requires, nothing else that could be
+    # mistaken for a shortcut around the real check above.
+    return {"zk_verified": verified}
 
 
 if __name__ == "__main__":

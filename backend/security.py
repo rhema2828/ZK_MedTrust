@@ -24,9 +24,9 @@ did. Likewise, `validate_proof_request`'s range checks and
 `buildAccuracyWitness`'s matching checks in zk/witness/witnessBuilder.mjs
 are fail-fast guardrails for the honest path, not a cryptographic
 guarantee - a party who controls their own request never has to go through
-this code at all. The circuit (once it exists, Phase 5/7) is the actual
-trust boundary for the accuracy claim; everything in this file is ordinary
-application-layer hygiene around it.
+this code at all. The circuit (circuits/accuracy.circom, Phase 5/6) is the
+actual trust boundary for the accuracy claim; everything in this file is
+ordinary application-layer hygiene around it.
 
 This module is demo/hackathon-scale on purpose, and says so at each spot
 where a real production deployment would need more (see individual
@@ -142,15 +142,16 @@ def enforce_rate_limit(api_key: str = Header(default="anonymous", alias="X-API-K
 
 # -------------------------------------------------------- input validation --
 
-ACCURACY_SCALE = 100  # matches zk/witness/witnessBuilder.mjs's SCALE
+ACCURACY_SCALE = 100  # matches zk/witness/witnessBuilder.mjs's SCALE and circuits/accuracy.circom's SCALE
 
 
 def validate_proof_request(claimed_accuracy: int, correct: int, total: int) -> None:
     """Range checks beyond what Pydantic's type validation already covers.
 
-    Deliberately the same three checks the (pending) accuracy circuit will
-    also enforce for real - see this module's docstring for why duplicating
-    them here is a fail-fast convenience, not a security boundary.
+    Deliberately the same checks circuits/accuracy.circom's constraints
+    also enforce for real - see this module's docstring for why
+    duplicating them here is a fail-fast convenience, not a security
+    boundary.
     """
     if total <= 0:
         raise HTTPException(status_code=400, detail="total must be > 0.")
@@ -276,7 +277,7 @@ def secure_tempfile(suffix: str = ""):
     0600 permissions, guaranteed to be deleted on exit - including when the
     body of the `with` block raises. Not used by /predict (which already
     creates and cleans up its own temp file correctly) - this is for
-    Phase 7's future witness/proof files, which don't exist yet.
+    Phase 7's future witness/proof files.
     """
     fd, raw_path = tempfile.mkstemp(suffix=suffix)
     path = Path(raw_path)

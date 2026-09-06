@@ -1,8 +1,7 @@
 # ZK_MedTrust — Zero-Knowledge Layer
 
 This directory holds the zero-knowledge proof system for ZK_MedTrust.
-It is being built in phases. **Phases 1, 2, 3, 4, 5, and 8 are complete; Phase 6
-is scaffolded but not yet wired to Phase 5; Phases 7, 9, and 10 are not built yet.**
+It is being built in phases. **Phases 1-9 are complete; Phase 10 (final documentation) is in progress.**
 
 ---
 
@@ -24,10 +23,11 @@ Every later phase depends on this being real rather than a mock.
 
 Read this before writing any claim about the project.
 
-- **It is not a medical claim.** The ResNet-18 head in
-  `backend/ml_inference.py` is *randomly initialised* (seed 42, untrained). The
-  model's `Normal`/`Abnormal` outputs are structurally real but not
-  diagnostically meaningful.
+- **It is not a clinically validated claim.** `backend/ml_inference.py` wraps
+  torchxrayvision's `densenet121-res224-all` — a real model trained on real
+  chest X-ray datasets (see `CLAUDE.md`) — but nothing here is validated for
+  diagnostic use. The model's `Normal`/`Abnormal` outputs are real, trained
+  predictions, not a clinical diagnosis.
 - **A ZK proof proves a mathematical statement, not the truth of its inputs.**
   Later phases will prove `correct * 100 >= threshold * total`. That proves
   arithmetic about supplied evaluation results. It does not prove the model is
@@ -126,8 +126,8 @@ nowhere in either file.
 
 `y` is written as a public *input* checked with `===` rather than as an output
 signal. That is deliberate: it is the same shape the Phase 5 accuracy circuit
-will have (`threshold` and `total` public, per-sample results private), so the
-pattern carries forward unchanged.
+has (`threshold` and `total_predictions` public, `correct_predictions`
+private), so the pattern carries forward unchanged.
 
 Compiled size: **1 non-linear constraint, 3 wires, 1 public input, 1 private input.**
 
@@ -163,17 +163,23 @@ so the build artifacts exist.
 ```
 zk/
 ├── circuits/square.circom      the Phase 1 circuit
+├── circuits/accuracy.circom    Phase 5: the accuracy-threshold circuit
 ├── scripts/                    install, ceremony, demonstration
 ├── merkle/                     Phase 2: canonicalize, hash, tree, CLI
 ├── sampling/                   Phase 3: bound sample selection, CLI
 ├── evaluation/                 Phase 4: runs the existing model, scores it (Python)
+├── witness/                    Phase 6: evaluation output -> circuit witness
 ├── data/sample_dataset.json    Phase 2/4: synthetic demo dataset
 ├── data/images/                Phase 4: synthetic demo images
-├── test/                       automated sanity + Merkle assertions
+├── test/                       automated sanity + Merkle + accuracy + witness assertions
 ├── build/                      ALL generated — gitignored
 ├── package.json
 └── README.md
 ```
+
+`backend/security.py` + `backend/test_security.py` (Phase 8) live under
+`backend/`, not `zk/`, since they protect the FastAPI endpoints rather than
+being part of the cryptography itself.
 
 Nothing in `build/` is committed: `.wasm`, `.r1cs`, `.zkey`, `.ptau`,
 `commitment.json` and `proofs.json` are all generated artifacts.
@@ -454,11 +460,11 @@ placeholders with no clinical basis, exactly like the images. Every place
 
 Read this before quoting any accuracy number this phase produces.
 
-- **Real:** a real ONNX Runtime session, running the real (if untrained)
-  ResNet-18-shaped model, produces real, deterministic outputs, which get
-  compared and counted exactly the way real evaluation data would be. The
-  plumbing — selection → integrity check → inference → comparison →
-  aggregation — is genuine end to end.
+- **Real:** a real ONNX Runtime session, running the real, trained
+  torchxrayvision `densenet121-res224-all` model, produces real, deterministic
+  outputs, which get compared and counted exactly the way real evaluation data
+  would be. The plumbing — selection → integrity check → inference →
+  comparison → aggregation — is genuine end to end.
 - **Not real:** the `ground_truth` labels being compared against are
   synthetic placeholders assigned by hand. `backend/ml_inference.py` now
   wraps a real trained model (torchxrayvision's `densenet121-res224-all`,
@@ -607,81 +613,309 @@ build artifacts).
 
 ---
 
-# Phase 6 — connecting Merkle + Sampling + ZK (scaffolding)
+# Phase 6 — Connecting Merkle + Sampling + ZK
 
-This phase was built in parallel with Phase 5, before the two were merged
-back together — so the pipeline below and Phase 5's actual circuit
-(`zk/circuits/accuracy.circom`, now present) were developed independently and
-**are not yet wired to each other**. See the known gap called out under
-`witness/` below.
+Phase 6 is the wiring, not a new circuit: it takes Phase 4's real evaluation
+output and turns it into a real Groth16 proof via Phase 5's already-existing
+`circuits/accuracy.circom`, instead of the hand-typed example numbers
+`scripts/phase5_accuracy.sh` uses to demonstrate the circuit in isolation.
 
 ```
-build/commitment.json (Phase 2: Merkle root)
+build/commitment.json (Phase 2)
         |
         v
-build/selection.json (Phase 3: bound sample indices)
+build/selection.json (Phase 3)
         |
         v
-build/evaluation.json (Phase 4: correct_predictions / total_predictions)
+build/evaluation.json (Phase 4: correct_predictions / total_predictions from the REAL model)
         |
         v
 witness/buildWitness.mjs --threshold N
         |
         v
-build/accuracy_input.json = {"correct": N, "total": M, "threshold": T}
+build/accuracy_input.json = {"correct_predictions": N, "total_predictions": M, "threshold": T}
         |
         v
-   circuits/accuracy.circom  <-- signal names DON'T MATCH YET, see below
-        |
-        v
-   Groth16 setup -> prove -> verify  (already works standalone, see Phase 5)
+circuits/accuracy.circom  ->  Groth16 setup -> prove -> verify
 ```
 
-## What's ZK-enforced vs. what's protocol-enforced
+## What's ZK-enforced vs. protocol-enforced
 
-The brief is explicit that this distinction has to be stated plainly, not
-implied. As of Phase 6:
+The brief requires this distinction be stated plainly, not implied.
 
 | Property | Enforced by |
 |---|---|
-| `correct*100 >= threshold*total` arithmetic | **the circuit** (`circuits/accuracy.circom`, Phase 5) — the actual trustless guarantee, verified standalone via `scripts/phase5_accuracy.sh` |
-| `0 < total`, `0 <= correct <= total`, `0 <= threshold <= 100` | checked twice: once as an ordinary-code guardrail in `witnessBuilder.mjs` (fail-fast for the honest path — trivially bypassable by a prover on their own machine), and once for real inside the circuit's constraints |
+| `correct*100 >= threshold*total` arithmetic, and all four range checks | **the circuit** (`circuits/accuracy.circom`) — a real Groth16 / hard-constraint guarantee: a violating claim cannot even produce a witness |
 | the image a prediction was made on matches what the Merkle leaf committed to | `evaluation/evaluate.py`'s `verify_image_integrity()` — ordinary code, not the circuit |
 | sample selection can't be re-rolled for a favorable subset | `sampling/selectSamples.mjs`'s deterministic derivation from the published root — ordinary code, not the circuit |
 | the evaluation set can't be silently altered after publishing its root | the Merkle tree itself (`merkle/merkleTree.mjs`) — cryptographic, but via hash commitment, not Groth16 |
 
-Only the first row is a ZK-SNARK guarantee. Everything else is real, but it's
+Only the first row is a ZK-SNARK guarantee. Everything else is real, but is
 "ordinary code checked a hash/determinism property," not "a proof system
-verified it" — conflating the two is exactly what the brief's Phase 6
-instructions warn against.
+verified it."
 
 ## `witness/`
 
 - **`witnessBuilder.mjs`** — pure function `buildAccuracyWitness({correct,
-  total, threshold})`, validated and unit-tested independent of any file I/O.
+  total, threshold})`, producing exactly `circuits/accuracy.circom`'s field
+  names (`correct_predictions`, `total_predictions`, `threshold`) and
+  public/private split. Validated and unit-tested independent of any file
+  I/O or the circuit itself.
 - **`buildWitness.mjs`** — CLI: `node witness/buildWitness.mjs --threshold N`
   reads `build/evaluation.json`, writes `build/accuracy_input.json`.
 - **`scripts/phase6_pipeline.sh`** — runs the whole chain above in one
-  command.
+  command against a real evaluation run. Handles both real outcomes
+  correctly: if the real result doesn't clear the threshold, witness
+  generation is *expected* to fail (the circuit's hard-constraint
+  guarantee), and the script reports that as a PASS, not an error — it only
+  fails loudly if a witness generates without a corresponding pass, or a
+  witness exists but proving/verification breaks.
 
-**⚠ Known gap, not yet fixed:** `witnessBuilder.mjs` returns
-`{correct, total, threshold}`, but `circuits/accuracy.circom` (Phase 5)
-declares its signals as `correct_predictions`, `total_predictions`, and
-`threshold`. `buildWitness.mjs`'s output JSON therefore does not currently
-match what `generate_witness.js` expects for that circuit. This was
-correctly anticipated by this phase's own design (`phase6_pipeline.sh`'s
-Step 5 explicitly checks for the circuit and, now that it exists, will hit
-this mismatch and exit non-zero rather than silently produce a wrong
-witness) — it's a small, mechanical fix (rename the two fields, or add a
-mapping step), not a design problem, but it is not done yet.
+## Try it
+
+```bash
+cd zk
+THRESHOLD=50 bash scripts/phase6_pipeline.sh
+```
+
+Needs `backend/models/densenet121_xrv.onnx` exported first (see Phase 4's
+setup) — this is the same real-model prerequisite Phase 4 already
+documents, not a new one. Try a threshold your last real evaluation run's
+accuracy clears (the script tells you what to try if it doesn't) to see the
+positive, verifying path; the default 50% is deliberately likely to exceed
+what a real pathology-detection model produces on the synthetic (non-X-ray)
+demo images, precisely to exercise the "false claim correctly rejected"
+path by default.
 
 ## Tests
 
-`test/witness.test.mjs` — valid input passes through; rejects `total=0`,
-negative `total`, `correct > total`, negative `correct`, `threshold` outside
-`[0,100]`, and non-integer inputs; boundary cases (`correct=0`,
-`correct=total`) accepted; `meetsThreshold()` matches the circuit's intended
-inequality including the exact-boundary case.
+`test/witness.test.mjs` (`node:test`, matching existing style): valid input
+produces exactly the circuit's expected field names; rejects `total=0`,
+negative `total`, `correct > total`, negative `correct`, `threshold`
+outside `[0,100]`, and non-integer inputs; boundary cases accepted;
+`meetsThreshold()` matches the circuit's intended inequality including the
+exact-boundary case.
+
+---
+
+# Phase 8 — Security Layer
+
+Phase 8 sits **around** the ZK proof, never inside it — see the layering
+this section exists to preserve:
+
+```
+API security (backend/security.py)
+      |
+      v
+request authentication / anti-replay
+      |
+      v
+ZK proof generation
+      |
+      v
+Groth16 proof
+      |
+      v
+Groth16 verification
+```
+
+An API key proves "this caller is allowed to ask for a proof." It proves
+nothing about model accuracy, and is never treated as if it did.
+`validate_proof_request`'s range checks mirror what the circuit's
+constraints also enforce, for the same "fail-fast convenience, not a
+security boundary" reason `witnessBuilder.mjs`'s checks are — the circuit
+is still the actual trust boundary for the accuracy claim.
+
+## What's in `backend/security.py`
+
+Scoped to `/generate_proof` only — `/predict` and `/health` are untouched.
+
+- **API key** (`require_api_key`) — `X-API-Key` vs. `ZK_API_KEY` env var,
+  `hmac.compare_digest`. Fails **closed**: an unconfigured `ZK_API_KEY`
+  means the server refuses to run insecurely, not that it allows all
+  requests through.
+- **Rate limiting** (`enforce_rate_limit`, `RateLimiter`) — in-memory
+  fixed-window, demo-scale (resets on restart, not multi-process-safe; a
+  real deployment needs Redis or similar).
+- **Input validation** (`validate_proof_request`) — see above.
+- **HMAC tickets** (`issue_ticket` / `verify_ticket`) — a signed ticket
+  carrying a nonce, `issued_at`/`expires_at`, and a **hash** of the request
+  payload — never the payload itself, which is what keeps patient data out
+  of tickets entirely. `verify_ticket` rejects expired tickets and replayed
+  nonces (an in-memory seen-set for this session).
+- **Secure temp files** (`secure_tempfile`) — `0600` permissions,
+  guaranteed cleanup including on exception. Not used by `/predict` (which
+  already handles its own temp file correctly) — ready for Phase 7's future
+  witness/proof files.
+- **Model integrity** (`verify_model_integrity`) — standalone SHA-256
+  check utility, not wired into `ml_inference.py`.
+- **Request IDs** — `uuid4()` per request, echoed as `X-Request-ID`.
+
+`/generate_proof` gains all of the above plus a live `ticket` in its
+response. Its body is still the Phase 4-era echo stub — Phase 7 replaces
+the inner logic (with a real call into `circuits/accuracy.circom`'s
+prove/verify, per Phase 6 above) without touching this gate again.
+
+## Try it
+
+```bash
+export ZK_API_KEY=dev-demo-key-change-me
+export ZK_TICKET_SECRET=dev-demo-secret-change-me
+python backend/app.py
+# in another shell:
+curl -X POST localhost:8000/generate_proof \
+  -H "Content-Type: application/json" -H "X-API-Key: dev-demo-key-change-me" \
+  -d '{"claimed_accuracy": 80, "correct": 8, "total": 10}'
+```
+
+## Tests
+
+`backend/test_security.py` (Python `unittest`, matching Phase 4's
+approach): unit tests for every utility above (API key accept/reject, rate
+limit trip + window reset, ticket issue/verify roundtrip, tampered ticket
+rejected, expired ticket rejected, replayed nonce rejected, model-integrity
+match/mismatch, `validate_proof_request` edge cases, `secure_tempfile`
+cleanup including on exception — 30 tests), plus `fastapi.testclient`
+integration tests against the real running route (6 tests: 401 without a
+key, 200 with a valid key + valid body, 400 on an invalid body, 429 after
+tripping the rate limit, `/health`/`/predict` unaffected). 36/36 passing.
+
+Run with `python -m unittest backend/test_security.py -v` from the repo
+root.
+
+# Phase 7 — FastAPI Integration
+
+Phase 7 is the last piece connecting the demo UI to real cryptography:
+`/generate_proof` and `/verify_proof` now call the real toolchain, not a
+stub. Preserves everything Phase 8 already built — same security gate,
+same route shape, only what happens *inside* the route changed.
+
+## Why a Python↔Node bridge
+
+The ZK toolchain (circom, snarkjs) is Node/JS — that's where Phases 1–6
+built and verified it. Rather than reimplementing any part of that in
+Python, `backend/zk_proof.py` shells out to two small one-shot Node CLIs
+that call snarkjs's JS API directly:
+
+- **`zk/witness/proveAccuracy.mjs`** — stdin `{correct, total, threshold}`,
+  stdout a real proof, or a clearly-typed error (see below). Requires the
+  circuit already compiled and Groth16 setup already run — a real
+  deployment's trusted setup happens **once, offline**, not per request;
+  this script deliberately does not run it itself.
+- **`zk/witness/verifyAccuracy.mjs`** — stdin `{proof, publicSignals}`,
+  stdout `{"zk_verified": true|false}`. Always exits 0: "did not verify"
+  (tampered proof, wrong signals, even malformed input) is a normal,
+  expected outcome, not an error condition.
+
+Both use the same `snarkjs.groth16.fullProve` / `snarkjs.groth16.verify`
+JS-API pattern `test/accuracy.test.mjs` already exercises — no new
+cryptographic code, just a new way of invoking the same, already-verified
+path.
+
+## `/generate_proof`, for real
+
+```
+authenticate + rate limit (Phase 8, unchanged)
+        |
+        v
+validate_proof_request (Phase 8, unchanged)
+        |
+        v
+generate_accuracy_proof(correct, total, threshold=claimed_accuracy)
+        |
+        v
+  real Groth16 proof, or a typed refusal:
+    - ClaimNotProvableError  -> HTTP 422 (the claim is false; no proof exists)
+    - ZkToolchainNotReadyError -> HTTP 503 (one-time setup not run yet)
+```
+
+`claimed_accuracy` is treated as the circuit's `threshold` signal — "I
+claim >= claimed_accuracy% accuracy." The existing request field name is
+kept as-is (preserving the API, per the brief), just given its real
+cryptographic meaning now that there's a real circuit to check it against.
+
+**A false claim returns 422, not a fake proof and not a 500.** This
+matters: the circuit's constraints mean witness generation itself fails
+for a false claim (see Phase 5/6) — there is no proof to hand back, and
+that refusal is the security property working, not a server error.
+
+Response now carries `proof` (a real Groth16 proof: `pi_a`, `pi_b`,
+`pi_c`, `protocol`, `curve`) and `public_signals` (`[valid,
+total_predictions, threshold]` — `correct_predictions` never appears,
+anywhere in the response), alongside the Phase 8 `request_id` and
+`ticket`.
+
+## `/verify_proof`, new
+
+```json
+POST /verify_proof
+{"proof": {...}, "public_signals": ["1", "10", "70"]}
+```
+
+Same auth + rate limit as `/generate_proof`. **Deliberately not gated by
+the `/generate_proof` ticket** — Groth16 verification is meant to be
+re-checkable by anyone, any number of times (that is the entire point of
+a public, portable proof). Nonce/replay protection belongs on the request
+that *creates* a proof, not on checking one that already exists;
+gating verification with one-time-use semantics would make proofs
+useless for the auditing use case this whole project is for.
+
+Always returns exactly `{"zk_verified": true}` or `{"zk_verified":
+false}` — nothing else, and there is no code path that produces `true`
+without the real `snarkjs.groth16.verify()` call agreeing. A tampered
+proof, tampered public signals, or a well-formed proof checked against
+the wrong claim's signals all correctly return `false`, not an error.
+
+## Try it
+
+```bash
+export ZK_API_KEY=dev-demo-key-change-me
+export ZK_TICKET_SECRET=dev-demo-secret-change-me
+python backend/app.py
+```
+
+```bash
+# generate a real proof
+curl -s -X POST localhost:8000/generate_proof \
+  -H "Content-Type: application/json" -H "X-API-Key: dev-demo-key-change-me" \
+  -d '{"claimed_accuracy": 70, "correct": 8, "total": 10}' | tee /tmp/gp.json
+
+# verify it for real
+python3 -c "
+import json, requests
+r = json.load(open('/tmp/gp.json'))
+resp = requests.post('http://localhost:8000/verify_proof',
+    headers={'X-API-Key': 'dev-demo-key-change-me'},
+    json={'proof': r['proof'], 'public_signals': r['public_signals']})
+print(resp.json())   # {'zk_verified': True}
+"
+```
+
+## Tests
+
+- `backend/test_zk_proof.py` — the Python↔Node bridge directly, against
+  the real toolchain (self-skips if the one-time setup hasn't run):
+  valid claim produces a real proof (with `correct_predictions` absent
+  from the public signals), the exact-boundary case (`70/100 >= 70%`)
+  succeeds, false/out-of-range claims raise `ClaimNotProvableError`;
+  verification of an honest proof succeeds, a tampered proof/public
+  signal/malformed input all correctly return `False` without raising, a
+  proof from one claim doesn't verify against a different claim's
+  signals. 11 tests.
+- `backend/test_security.py`'s `GenerateProofEndpointTests` /
+  `VerifyProofEndpointTests` — the real routes end-to-end via
+  `fastapi.testclient`: a valid claim gets a real proof back (protocol
+  `groth16`, `correct_predictions` absent from the response), an
+  unmeetable claim returns 422 with no proof in the body, `/verify_proof`
+  round-trips an honest proof to `zk_verified: true` and a tampered
+  proof/signal to `false`, both routes still require the API key. 41
+  tests total in this file.
+
+Run with `python -m unittest backend/test_zk_proof.py backend/test_security.py -v`
+from the repo root (needs the one-time Groth16 setup run first — see Phase
+5/6's "Try it" sections).
+
+---
 
 ## Roadmap
 
@@ -691,9 +925,9 @@ inequality including the exact-boundary case.
 | 2. Merkle dataset commitment | ✅ done |
 | 3. Cryptographically bound sampling | ✅ done |
 | 4. Evaluation pipeline | ✅ done, verified end-to-end against the real model (see Phase 4 setup) |
-| 5. Accuracy circuit (`correct*100 >= threshold*total`) | ✅ done, verified standalone (see Phase 5 above) |
-| 6. Merkle + sampling + ZK wiring | 🟡 scaffolding done (witness assembly + orchestration); not yet wired to Phase 5's circuit — signal name mismatch, see Phase 6's `witness/` section above |
-| 7. FastAPI `/generate_proof` + `/verify_proof` | not started |
-| 8. Security layer | ✅ done (API key, rate limiting, input validation, HMAC tickets w/ nonce+TTL, temp-file security, model-integrity check) — wired onto the existing `/generate_proof` stub; real proof logic still pending Phase 7 |
-| 9. Full test matrix | partial — see each phase's own Tests section |
-| 10. Documentation | in progress (this file + `CLAUDE.md`) |
+| 5. Accuracy circuit (`correct*100 >= threshold*total`) | ✅ done |
+| 6. Merkle + sampling + ZK wiring | ✅ done, verified end-to-end against real evaluation output (both the correctly-rejected and correctly-verified cases) |
+| 7. FastAPI `/generate_proof` + `/verify_proof` | ✅ done — real Groth16 proofs, real verification, both live in the running API |
+| 8. Security layer | ✅ done, scoped to `/generate_proof` + `/verify_proof` |
+| 9. Full test matrix | ✅ done — `PHASE9_TEST_MATRIX.md` maps every brief checklist item to its test; `bash run_all_tests.sh` runs all 120 in one command |
+| 10. Documentation | not started |

@@ -1,11 +1,12 @@
 /*
- * PHASE 6 - CLI: build the accuracy circuit's witness input from Phase 4's
- * evaluation output.
+ * PHASE 6 - CLI: build circuits/accuracy.circom's witness input from
+ * Phase 4's evaluation output.
  *
  * Reads build/evaluation.json (produced by evaluation/evaluate.py) and a
- * --threshold argument, and writes build/accuracy_input.json - the exact
- * shape a Circom witness generator for the accuracy circuit will consume
- * once that circuit exists (see witnessBuilder.mjs's header comment).
+ * --threshold argument, and writes build/accuracy_input.json in exactly
+ * the shape scripts/phase5_accuracy.sh's own make_input() writes by hand -
+ * so the same circuit, same compiled artifacts, same setup can consume
+ * either one.
  *
  *   node witness/buildWitness.mjs --threshold 80
  */
@@ -61,18 +62,19 @@ async function main() {
   const outPath = path.join(buildDir, "accuracy_input.json");
   fs.writeFileSync(outPath, JSON.stringify(witness, null, 2) + "\n");
 
-  console.log(`correct=${witness.correct} total=${witness.total} threshold=${witness.threshold}`);
+  const claim = { correct: witness.correct_predictions, total: witness.total_predictions, threshold };
   console.log(
-    meetsThreshold(witness)
-      ? `This witness DOES satisfy the claim (>=${threshold}%) - a real proof, once the circuit exists, should verify.`
-      : `This witness does NOT satisfy the claim (>=${threshold}%) - a real proof, once the circuit exists, should FAIL to be produced/verify.`
+    `correct_predictions=${witness.correct_predictions} total_predictions=${witness.total_predictions} threshold=${witness.threshold}`
+  );
+  console.log(
+    meetsThreshold(claim)
+      ? `This witness DOES satisfy the claim (>=${threshold}%) - circuits/accuracy.circom should produce a proof that verifies.`
+      : `This witness does NOT satisfy the claim (>=${threshold}%) - circuits/accuracy.circom's constraints mean witness generation itself should FAIL, not just verification.`
   );
   console.log(`Wrote ${outPath}`);
-  console.log(
-    `Reminder: ground truth and the underlying model are ${
-      evaluation.synthetic_data_warning ? "SYNTHETIC/placeholder" : "unlabeled"
-    } - see evaluation.json's own warning field.`
-  );
+  if (evaluation.synthetic_data_warning) {
+    console.log(`Reminder: ${evaluation.synthetic_data_warning}`);
+  }
 }
 
 main();

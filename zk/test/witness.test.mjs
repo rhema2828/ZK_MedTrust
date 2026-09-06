@@ -1,17 +1,18 @@
 /*
  * PHASE 6 WITNESS ASSEMBLY TESTS
  *
- * buildAccuracyWitness() mirrors the exact range checks the (not-yet-built)
- * accuracy circuit will also enforce - see witnessBuilder.mjs's header for
- * why that duplication is deliberate and what it is / is not a guarantee of.
+ * buildAccuracyWitness() produces the exact field names and public/private
+ * split circuits/accuracy.circom (Phase 5) requires, and mirrors the same
+ * range checks the circuit's constraints enforce - see witnessBuilder.mjs's
+ * header for what that duplication is and is not a guarantee of.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildAccuracyWitness, meetsThreshold, ACCURACY_SCALE } from "../witness/witnessBuilder.mjs";
 
-test("valid input passes through unchanged", () => {
+test("valid input produces the circuit's exact expected field names", () => {
   const witness = buildAccuracyWitness({ correct: 8, total: 10, threshold: 70 });
-  assert.deepEqual(witness, { correct: 8, total: 10, threshold: 70 });
+  assert.deepEqual(witness, { correct_predictions: 8, total_predictions: 10, threshold: 70 });
 });
 
 test("rejects total = 0", () => {
@@ -43,8 +44,14 @@ test("rejects negative correct", () => {
 });
 
 test("accepts correct = 0 and correct = total (boundary)", () => {
-  assert.deepEqual(buildAccuracyWitness({ correct: 0, total: 5, threshold: 0 }), { correct: 0, total: 5, threshold: 0 });
-  assert.deepEqual(buildAccuracyWitness({ correct: 5, total: 5, threshold: 100 }), { correct: 5, total: 5, threshold: 100 });
+  assert.deepEqual(
+    buildAccuracyWitness({ correct: 0, total: 5, threshold: 0 }),
+    { correct_predictions: 0, total_predictions: 5, threshold: 0 }
+  );
+  assert.deepEqual(
+    buildAccuracyWitness({ correct: 5, total: 5, threshold: 100 }),
+    { correct_predictions: 5, total_predictions: 5, threshold: 100 }
+  );
 });
 
 test("rejects threshold outside [0, 100]", () => {
@@ -65,14 +72,11 @@ test("rejects non-integer inputs", () => {
 });
 
 test("meetsThreshold matches the circuit's intended inequality", () => {
-  // 8/10 = 80% >= 70% threshold
   assert.equal(meetsThreshold({ correct: 8, total: 10, threshold: 70 }), true);
-  // 8/10 = 80% < 90% threshold
   assert.equal(meetsThreshold({ correct: 8, total: 10, threshold: 90 }), false);
-  // exact boundary: 7/10 = 70% >= 70%
-  assert.equal(meetsThreshold({ correct: 7, total: 10, threshold: 70 }), true);
+  assert.equal(meetsThreshold({ correct: 7, total: 10, threshold: 70 }), true); // exact boundary
 });
 
-test("ACCURACY_SCALE is 100, per the brief", () => {
+test("ACCURACY_SCALE is 100, per the circuit", () => {
   assert.equal(ACCURACY_SCALE, 100);
 });
