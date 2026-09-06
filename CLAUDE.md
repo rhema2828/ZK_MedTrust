@@ -71,13 +71,75 @@ across Streamlit reruns. Calls the FastAPI endpoints over HTTP at
   (`claimed_accuracy = round(confidence*100)`, `correct: 1, total: 1`) since there's
   no ground truth in this UI flow — a placeholder until real accuracy claims exist.
 
+## Zero-Knowledge Layer (`zk/`)
+
+Real Circom + SnarkJS + Groth16 work, being built in gated phases on branch
+`claude/zk-medtrust-layer-tgpnhs`. Full detail, algorithms, and "try it" commands
+are in `zk/README.md` — this is a summary of what exists so far so it doesn't have
+to be rediscovered.
+
+- **Phase 1 — toolchain sanity.** `zk/circuits/square.circom` proves `x*x=y`
+  (`x` private, `y` public). `zk/scripts/install_toolchain.sh` builds `circom`
+  v2.2.2 from source (not published to npm or crates.io, and GitHub Releases is
+  blocked in this sandbox, so `cargo install` from a pinned git tag is the install
+  path) and installs `snarkjs`. `zk/scripts/ptau.sh` generates a **local
+  development** Powers-of-Tau ceremony (the real Hermez file is blocked here too)
+  — loudly flagged everywhere as not a trusted setup. `zk/scripts/phase1_square.sh`
+  proves, verifies (pass), then tampers with the public input and the proof
+  separately and confirms both are rejected.
+- **Phase 2 — Merkle dataset commitment.** `zk/merkle/`: a record is exactly
+  `{record_id, image_sha256, ground_truth, dataset_version}` canonicalized to one
+  fixed string; leaf = SHA-256(canonical) reduced into the BN254 scalar field; tree
+  nodes combine with Poseidon (`circomlibjs` — same implementation circomlib's
+  circuit template uses, so a path built here still checks out inside a circuit
+  later). Padding uses the field element `0`, not a duplicated leaf (duplication
+  lets two different datasets collide on one root). `image_sha256` commits to
+  image *content*, not a path.
+- **Phase 3 — cryptographically bound sampling.** `zk/sampling/`: sample indices
+  are `SHA256(root | dataset_version | sample_size)` expanded with a counter —
+  deterministic from public values already on the commitment, so a prover can't
+  privately re-roll a sample until they get one they like. Documented limitation:
+  this stops re-rolling a *fixed, published* dataset; it doesn't by itself stop
+  shopping around for a different dataset before ever publishing a root (would
+  need an external randomness beacon — not implemented).
+- **Phase 4 — evaluation pipeline.** `zk/evaluation/evaluate.py` imports
+  `backend/ml_inference.py` unmodified (same `sys.path` + `import ml_inference`
+  pattern `app.py` already uses — `backend/` isn't a package) and runs the real
+  model over Phase 3's selected records, re-verifying each image's SHA-256 against
+  the Merkle commitment immediately before inference. `zk/data/sample_dataset.json`
+  now has **real** synthetic images (`zk/evaluation/make_synthetic_images.py`,
+  deterministic/reproducible) instead of Phase 2's original placeholder text-hash
+  stand-ins — `dataset_version` bumped to `phase2-synthetic-demo-v2` accordingly,
+  which intentionally changed the Merkle root. `ground_truth` labels are
+  hand-assigned synthetic placeholders, so `correct_predictions` from this
+  pipeline is explicitly **not** a medically meaningful figure regardless of how
+  good the underlying model is — every place it's printed says so.
+  - This section was written when `backend/ml_inference.py` still used an
+    ImageNet ResNet-18 with an untrained random head, and the sandbox that built
+    it couldn't reach `download.pytorch.org` to even export that model. Both are
+    now moot: `ml_inference.py` was replaced with a real trained model (see
+    above) before this branch was merged, and export/inference already works on
+    this machine. `zk/evaluation/test_evaluate.py`'s real-model integration test
+    has not yet been re-run against the new model — do that before trusting its
+    13/13-pass claim below.
+- **Phases 5–10 — not started.** Accuracy circuit
+  (`correct*100 >= threshold*total`), wiring Merkle+sampling+ZK together, real
+  `/generate_proof` + `/verify_proof`, the security layer (API keys, rate
+  limiting, HMAC tickets), the full test matrix, and final docs. See the roadmap
+  table at the bottom of `zk/README.md` for current status.
+
 ## Not yet built
 
-- Real SnarkJS/circom proof generation behind `/generate_proof` (currently an echo
-  stub).
+- Real SnarkJS/circom proof generation *wired into the FastAPI backend* — the
+  cryptography itself works (`zk/`, Phases 1–3 above), but `/generate_proof` is
+  still the original echo stub and `/verify_proof` doesn't exist yet (Phase 7).
 - The `/generate_proof` payload needs rethinking once proofs are real — an accuracy
   claim needs a labeled evaluation set, not one unlabeled prediction.
-- Tests.
+- Any frontend (`streamlit` is in requirements.txt but unused so far). Its
+  "Verify Proof" button (`frontend/streamlit_app.py:104`) currently just sets a
+  session flag on click — no real verification call. Needs fixing once
+  `/verify_proof` exists (Phase 10 of the zk/ roadmap).
+- Tests for `backend/` itself (`zk/` now has its own test suites — see above).
 
 ## Setup gotchas learned the hard way
 
