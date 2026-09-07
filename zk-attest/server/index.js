@@ -30,15 +30,19 @@ for (const p of [WASM_PATH, ZKEY_PATH, VKEY_PATH]) {
 const verificationKey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const circuitStats = fs.existsSync(STATS_PATH) ? JSON.parse(fs.readFileSync(STATS_PATH, 'utf8')) : null;
 
-// The circuit has two distinct hard-constraint assert sites (verified
-// against the compiled circuit — see PROGRESS notes / commit history, not
-// guessed): line 70 is the Merkle-path check, line 76 is the balance
-// comparator. A witness that fails to generate at all means one of these
-// constraints has no satisfying assignment; snarkjs's witness-calculator
-// error names the exact line, so the server reads it rather than assuming
-// which one fired.
-const FAILURE_LINE_MERKLE = 70;
-const FAILURE_LINE_THRESHOLD = 76;
+// The circuit has three distinct hard-constraint assert sites (re-verified
+// against this exact compiled circuit by triggering each one and reading
+// the real witness-calculator error, on 2026-09-07 — not guessed, and not
+// reused from a prior circuit revision, since adding the `blocked` signal
+// shifted every line number below the leaf computation):
+// line 75 is the Merkle-path check, line 81 is the balance comparator,
+// line 84 is the custodian block-flag check. A witness that fails to
+// generate at all means one of these constraints has no satisfying
+// assignment; snarkjs's witness-calculator error names the exact line, so
+// the server reads it rather than assuming which one fired.
+const FAILURE_LINE_MERKLE = 75;
+const FAILURE_LINE_THRESHOLD = 81;
+const FAILURE_LINE_BLOCKED = 84;
 
 function classifyWitnessFailure(err) {
   const message = String((err && err.message) || err);
@@ -57,6 +61,13 @@ function classifyWitnessFailure(err) {
       failedAt: 'threshold',
       error:
         'The account is genuinely in the custodian’s tree, but its committed balance does not exceed the threshold. The proof cannot be constructed.',
+    };
+  }
+  if (line === FAILURE_LINE_BLOCKED) {
+    return {
+      failedAt: 'blocked',
+      error:
+        'The account is in the custodian’s tree and clears the balance threshold, but the custodian’s own leaf marks it blocked. The proof cannot be constructed.',
     };
   }
   return {

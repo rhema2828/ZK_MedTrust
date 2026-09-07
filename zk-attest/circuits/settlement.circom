@@ -46,6 +46,7 @@ template Settlement(depth) {
     signal input balance;
     signal input salt;
     signal input accountId;
+    signal input blocked;               // NEW: custodian-set block flag, must be 0 or 1
     signal input pathElements[depth];
     signal input pathIndices[depth];
 
@@ -54,11 +55,15 @@ template Settlement(depth) {
     signal input threshold;
     signal input tradeId;
 
-    // 1. leaf = Poseidon(accountId, balance, salt)
-    component leaf = Poseidon(3);
+    // 0. blocked must be a bit (0 = clear, 1 = sanctioned/blocked)
+    blocked * (blocked - 1) === 0;
+
+    // 1. leaf = Poseidon(accountId, balance, salt, blocked)
+    component leaf = Poseidon(4);
     leaf.inputs[0] <== accountId;
     leaf.inputs[1] <== balance;
     leaf.inputs[2] <== salt;
+    leaf.inputs[3] <== blocked;
 
     // 2. that leaf is in the custodian-attested tree
     component mp = MerklePath(depth);
@@ -75,7 +80,10 @@ template Settlement(depth) {
     gt.in[1] <== threshold;
     gt.out === 1;
 
-    // 4. bind the proof to one trade so it cannot be replayed
+    // 4. the account must not be flagged blocked
+    blocked === 0;
+
+    // 5. bind the proof to one trade so it cannot be replayed
     signal tradeIdBound;
     tradeIdBound <== tradeId * tradeId;
 }

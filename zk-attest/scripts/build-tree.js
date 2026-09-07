@@ -4,12 +4,17 @@
 // (256 slots — unused slots hold the field element 0, matching what the
 // frozen circuit's MerklePath(8) expects).
 //
-// Leaf = Poseidon(accountId, balance, salt). The salt is per-account and
-// deterministic — derived from a fixed demo seed via SHA-256, reduced into
-// the BN254 scalar field — so the root reproduces identically on every
+// Leaf = Poseidon(accountId, balance, salt, blocked). The salt is per-account
+// and deterministic — derived from a fixed demo seed via SHA-256, reduced
+// into the BN254 scalar field — so the root reproduces identically on every
 // laptop without persisting anything. It doesn't need to be secret for this
 // demo: what's private is *which* leaf a given proof used, not the salt
 // formula.
+//
+// `blocked` is a custodian-set flag (0 or 1) folded into the leaf itself —
+// the circuit enforces `blocked === 0`, so a proof cannot be constructed at
+// all for a flagged account. One demo account (1005) is hardcoded blocked so
+// this is backed by a real leaf and a real failing constraint, not narration.
 //
 // Every level of the tree is kept (not just the leaves), so extracting a
 // sibling path for a witness is an array lookup, not a recomputation.
@@ -21,11 +26,14 @@ const DEPTH = 8;
 const NUM_LEAVES = 1 << DEPTH; // 256
 
 // Institution book. `role` is demo narration only — never enters the circuit.
+// `blocked` DOES enter the circuit (folded into the leaf) — it is a real
+// constraint input, not a display-only label.
 const BOOK = [
-  { accountId: 1001, balance: 12500000, name: 'Meridian Capital Partners', role: 'our client — clears the $1M bar comfortably' },
-  { accountId: 1002, balance: 4300000, name: 'Northfield Treasury Group', role: 'another honest institution' },
-  { accountId: 1003, balance: 250000, name: 'Ashcombe Reserve Fund', role: 'below threshold — the tamper case' },
-  { accountId: 1004, balance: 88000000, name: 'Corvatta Institutional Holdings', role: 'large institution, widens the anonymity set' },
+  { accountId: 1001, balance: 12500000, blocked: 0, name: 'Meridian Capital Partners', role: 'our client — clears the $1M bar comfortably' },
+  { accountId: 1002, balance: 4300000, blocked: 0, name: 'Northfield Treasury Group', role: 'another honest institution' },
+  { accountId: 1003, balance: 250000, blocked: 0, name: 'Ashcombe Reserve Fund', role: 'below threshold — the tamper case' },
+  { accountId: 1004, balance: 88000000, blocked: 0, name: 'Corvatta Institutional Holdings', role: 'large institution, widens the anonymity set' },
+  { accountId: 1005, balance: 9800000, blocked: 1, name: 'Halcyon Trade Corp', role: 'sanctioned — clears the balance bar but is custodian-flagged blocked' },
 ];
 
 let poseidonPromise = null;
@@ -56,7 +64,7 @@ async function buildTree() {
   const leaves = new Array(NUM_LEAVES).fill(0n);
   for (let i = 0; i < accounts.length; i++) {
     const a = accounts[i];
-    const h = poseidon([BigInt(a.accountId), BigInt(a.balance), a.salt]);
+    const h = poseidon([BigInt(a.accountId), BigInt(a.balance), a.salt, BigInt(a.blocked)]);
     leaves[i] = F.toObject(h);
   }
 
@@ -109,8 +117,12 @@ function pathFor(tree, slot) {
 // signal in place of the account's real (tree-committed) balance — the leaf
 // itself is unchanged, so the witness's own claimed balance no longer
 // matches what was hashed into the tree. That mismatch is what makes
-// mp.root === merkleRoot fail: this is the tamper case, not a shortcut past
-// it.
+// mp.root === merkleRoot fail: this is the balance-mismatch tamper case, not
+// a shortcut past it.
+//
+// Proving for a `blocked: 1` account (1005) with no override at all already
+// fails on its own, at the `blocked === 0` constraint — that's the
+// blocked-account case, distinct from a balance mismatch.
 async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {}) {
   const tree = await buildTree();
   const slot = slotIndexOf(tree, accountId);
@@ -124,6 +136,7 @@ async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {
       balance: balanceForWitness.toString(),
       salt: account.salt.toString(),
       accountId: String(account.accountId),
+      blocked: String(account.blocked),
       pathElements: pathElements.map(String),
       pathIndices: pathIndices.map(String),
       merkleRoot: tree.root.toString(),
@@ -142,7 +155,7 @@ async function getRoot() {
 }
 
 function getBook() {
-  return BOOK.map(({ accountId, balance, name, role }) => ({ accountId, balance, name, role }));
+  return BOOK.map(({ accountId, balance, blocked, name, role }) => ({ accountId, balance, blocked, name, role }));
 }
 
 module.exports = { DEPTH, NUM_LEAVES, BOOK, buildTree, witnessFor, getRoot, getBook, slotIndexOf, pathFor };
@@ -156,7 +169,7 @@ if (require.main === module) {
     console.log();
     console.log('Book:');
     for (const a of tree.accounts) {
-      console.log(`  ${a.accountId}  $${a.balance.toLocaleString()}  ${a.name} — ${a.role}`);
+      console.log(`  ${a.accountId}  $${a.balance.toLocaleString()}  blocked=${a.blocked}  ${a.name} — ${a.role}`);
     }
 
     console.log();
@@ -172,6 +185,14 @@ if (require.main === module) {
     console.log('(this witness will fail the circuit at mp.root === merkleRoot — the leaf');
     console.log(' that was actually committed to the tree hashed the real $250,000 balance,');
     console.log(' not the $5,000,000 written into this witness, so the recomputed root differs.)');
+
+    console.log();
+    console.log('--- blocked-account witness, account 1005, no override needed ---');
+    const blocked = await witnessFor(1005, { threshold: 1000000, tradeId: 20260907001 });
+    console.log(JSON.stringify(blocked.input, null, 2));
+    console.log();
+    console.log('(this witness will fail at blocked === 0 — 1005 clears the balance bar');
+    console.log(' comfortably but is custodian-flagged blocked in its own signed leaf.)');
   })().catch((err) => {
     console.error(err);
     process.exit(1);
