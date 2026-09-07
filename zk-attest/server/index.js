@@ -16,7 +16,7 @@ const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const snarkjs = require('snarkjs');
-const { witnessFor, getRoot, getCustodianPubKey, getBook, DEPTH } = require('../scripts/build-tree');
+const { witnessFor, getRoot, getCustodianPubKey, getBook, DEPTH, isUsingDefaultCustodianKey } = require('../scripts/build-tree');
 
 const ROOT = path.join(__dirname, '..');
 const BUILD = path.join(ROOT, 'build');
@@ -409,6 +409,13 @@ module.exports = { app };
 // not when it's imported — the test suite imports `app` and binds its own
 // ephemeral port so tests don't collide with a real running server.
 if (require.main === module) {
+  if (isUsingDefaultCustodianKey()) {
+    console.warn(
+      'WARNING: using the built-in demo custodian key (CUSTODIAN_KEY_SEED env var not set). ' +
+        'This key is public in this repository\'s source. Fine for a demo; never use it, or ' +
+        'this fallback path, for anything where the signature needs to mean something.',
+    );
+  }
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     console.log(`ZK-Attest server listening on http://localhost:${PORT}`);

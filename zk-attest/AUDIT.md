@@ -281,12 +281,32 @@ is not on the critical path of proving.
 appended after restart — genuinely tested by killing and restarting the
 process, not just re-reading the same in-memory array.
 
+## Second follow-up pass: custodian key overridability
+
+`build-tree.js`'s custodian key seed is now `process.env.CUSTODIAN_KEY_SEED
+|| <fixed demo string>`, with `isUsingDefaultCustodianKey()` exported so
+`server/index.js` can warn loudly (not silently) at boot when the demo
+default is active. This does not solve real key custody (that needs
+HSM/KMS infrastructure, not code) — it removes the narrower problem that
+the key was previously *forced* to be a hardcoded, unconditional secret in
+source with no override path at all.
+
+**Verified real**: confirmed the boot warning appears with no env var set
+and is absent with `CUSTODIAN_KEY_SEED` set; confirmed
+`getCustodianPubKey()` returns a genuinely different `Ax`/`Ay` pair under
+an overridden seed (`5865220...`/`9709176...` -> `2622926...`/`6639550...`);
+confirmed the Merkle root is unchanged under an overridden seed, correctly,
+since the root commits to leaf content (accountId/balance/salt/blocked),
+not to the signing key. All 20 tests still pass with no code path touched
+by the tests themselves changed.
+
+Trade-ID reuse across proofs (the other stated gap) was deliberately left
+alone — see the note in the chat: it needs a product decision (what
+"single-use" should even mean for an attestation that's meant to clear
+multiple trades during its validity period) before it's a matter of
+writing code, not after.
+
 ## Pending from this pass
 
-- None. All four items from the post-Phase-4 punch list are done: real
-  automated tests (18 -> 20 after item 3), `setup.sh` stale-artifact
-  detection, an isolated Merkle-check tamper mode, and a persistent audit
-  log. Remaining stated limitations (custodian key custody, trade-ID reuse
-  across proofs, the local-dev-only trusted setup ceremony) are inherent to
-  a hackathon demo and documented in `README.md`'s "Known gaps" rather than
-  "fixed" here — they'd need real infrastructure decisions, not a code fix.
+- Trade-ID reuse / attestation freshness — a design decision, not
+  implemented. Everything else from both post-Phase-4 passes is done.

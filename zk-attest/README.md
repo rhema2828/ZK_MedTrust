@@ -148,10 +148,13 @@ field. All 20 currently pass.
 
 ## Known gaps (stated plainly, not buried)
 
-- The custodian's private signing key in this demo is deterministic
-  (derived from a fixed string in `build-tree.js`) so the demo reproduces
-  identically on any machine. A real deployment would hold this key
-  outside the repository entirely, in an HSM or equivalent.
+- The custodian's private signing key defaults to a fixed demo string, but
+  is now overridable via the `CUSTODIAN_KEY_SEED` env var (the server warns
+  loudly at boot if you're running on the default). This does not by
+  itself make the key handling production-safe — whatever holds the real
+  value still needs real custody (HSM/KMS/etc.), and overriding it means
+  giving up the demo's deterministic reproducibility. It does mean the key
+  is no longer *forced* to be a hardcoded secret baked into source.
 - No mechanism exists to prevent the *same* signed leaf from being used to
   generate proofs for many different trade IDs — see "trade-ID binding"
   above.

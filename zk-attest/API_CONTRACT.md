@@ -20,7 +20,8 @@ bash scripts/setup.sh   # one-time: compiles the circuit + runs a local trusted 
 node server/index.js
 ```
 
-- **Port**: `3000` by default, override with the `PORT` env var (e.g. `PORT=4000 node server/index.js`). No other env vars are read.
+- **Port**: `3000` by default, override with the `PORT` env var (e.g. `PORT=4000 node server/index.js`).
+- **`CUSTODIAN_KEY_SEED`**: optional. Overrides the custodian's EdDSA signing key seed (defaults to a fixed demo string). If unset, the server prints a `WARNING` line at boot — visible, not silent. Changing it changes the custodian public key (`Ax`/`Ay` in every response that includes it) but *not* the Merkle root, since the root commits to leaf content, not to who signs the attestations.
 - **First-run cost**: `scripts/setup.sh` downloads a `circom` v2.1.9 binary (falls back to a `cargo build` from source if no prebuilt binary exists for your platform), then runs a local Powers-of-Tau ceremony at 2^14. On this machine, a clean run took **1m47s**. It is idempotent — a second run detects existing artifacts and finishes in a couple of seconds. If you edit `circuits/settlement.circom` yourself, the script now detects that automatically (it hashes the circuit source and compares against the hash from the last build) and regenerates only what's actually stale — confirmed by real test: an edited circuit produced a genuinely different `settlement_final.zkey` (different SHA-256) on the next run, in 17.6s (ptau reused, only the zkey step re-ran), and reverting the edit correctly rebuilt the original zkey again. Same detection applies if `POT_POWER` itself changes.
 - **Startup failure**: if `node server/index.js` exits immediately with a "Missing .../settlement.wasm" (or `.zkey`/verification key) error, `scripts/setup.sh` hasn't been run yet.
 - **CORS**: open to all origins — call this API from a dev server on any port with no configuration on your end.

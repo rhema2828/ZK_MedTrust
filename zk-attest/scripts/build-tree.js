@@ -22,20 +22,26 @@
 // balance/block-status claim with no matching signature cannot produce a
 // witness at all — the leaf is trusted because the custodian actually
 // attested to it, not merely because this script wrote it into the tree.
-// The custodian private key is demo-deterministic (SHA-256 of a fixed
-// string, same reproducibility rationale as the salts below) — a real
-// deployment would hold it outside this repo entirely.
-//
-// Every level of the tree is kept (not just the leaves), so extracting a
-// sibling path for a witness is an array lookup, not a recomputation.
-
+// The custodian private key seed defaults to a fixed demo string (same
+// reproducibility rationale as the salts below), but is overridable via the
+// CUSTODIAN_KEY_SEED env var — so a real deployment isn't forced to keep a
+// hardcoded secret baked into source. Overriding it does not by itself make
+// this "production ready": whatever holds the real value still needs real
+// custody (HSM/KMS/etc.), and the demo's own deterministic reproducibility
+// is lost once you do. isUsingDefaultCustodianKey() exists so callers (the
+// server, at boot) can surface that loudly rather than silently.
 const crypto = require('crypto');
 const { buildPoseidon, buildEddsa } = require('circomlibjs');
 
 const DEPTH = 8;
 const NUM_LEAVES = 1 << DEPTH; // 256
 
-const CUSTODIAN_PRIVATE_KEY_SEED = 'zk-attest-demo-custodian-eddsa-key-v1';
+const DEFAULT_CUSTODIAN_PRIVATE_KEY_SEED = 'zk-attest-demo-custodian-eddsa-key-v1';
+const CUSTODIAN_PRIVATE_KEY_SEED = process.env.CUSTODIAN_KEY_SEED || DEFAULT_CUSTODIAN_PRIVATE_KEY_SEED;
+
+function isUsingDefaultCustodianKey() {
+  return CUSTODIAN_PRIVATE_KEY_SEED === DEFAULT_CUSTODIAN_PRIVATE_KEY_SEED;
+}
 
 // Institution book. `role` is demo narration only — never enters the circuit.
 // `blocked` DOES enter the circuit (folded into the leaf) — it is a real
@@ -228,7 +234,7 @@ function getBook() {
   return BOOK.map(({ accountId, balance, blocked, name, role }) => ({ accountId, balance, blocked, name, role }));
 }
 
-module.exports = { DEPTH, NUM_LEAVES, BOOK, buildTree, witnessFor, getRoot, getCustodianPubKey, getBook, slotIndexOf, pathFor };
+module.exports = { DEPTH, NUM_LEAVES, BOOK, buildTree, witnessFor, getRoot, getCustodianPubKey, getBook, slotIndexOf, pathFor, isUsingDefaultCustodianKey };
 
 // CLI entry point: print the root, the book, and a sample honest + tampered
 // witness so this is checkable directly (`node scripts/build-tree.js`).
