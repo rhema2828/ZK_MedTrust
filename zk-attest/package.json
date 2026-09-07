@@ -6,7 +6,8 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "tree": "node scripts/build-tree.js",
-    "server": "node server/index.js"
+    "server": "node server/index.js",
+    "test": "node --test --test-force-exit test/*.test.mjs"
   },
   "dependencies": {
     "circomlib": "2.0.5",

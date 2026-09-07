@@ -197,6 +197,35 @@ transfer), and the custodian trust boundary (whoever holds the signing key
 is trusted; the circuit cannot verify the custodian was honest when it
 signed) stated as its own section rather than left implicit.
 
+## Post-Phase-4 backend hardening
+
+Follow-up pass addressing the gaps identified after Phase 4, backend-only
+(no frontend work), in priority order:
+
+### 1. Automated test suite
+
+`server/index.js` refactored to export `app` and only call `.listen()` when
+run directly (`require.main === module`), so it can be imported and bound
+to an ephemeral port in tests without touching the real port 3000.
+
+`test/server.test.mjs` — 18 tests via Node's built-in test runner, against
+the real exported `app`, with real proving and real `snarkjs.groth16.verify`
+calls (no mocking). Run with `npm test`. Covers: both book views (including
+that `/api/book/exchange` genuinely contains no institution data anywhere
+in its JSON, not just that it omits a field), the old `/api/book` 404,
+`/api/status`'s real constraint count, `/api/prove`'s success path
+(asserting the exact response key set — no PII leaks in), all three
+documented `failedAt` values (`threshold`, `blocked`, `attestation`),
+`/api/verify` on both a genuine and a mutated proof, input validation on
+every POST endpoint, the 404 handler, a live CORS header check (not just
+preflight), and that every audit-log entry's keys are a subset of the
+documented, PII-free set. All 18 pass:
+```
+ℹ tests 18
+ℹ pass 18
+ℹ fail 0
+```
+
 ## Pending from this pass
 
 - None — all four phases requested for this task (circuit completion, API

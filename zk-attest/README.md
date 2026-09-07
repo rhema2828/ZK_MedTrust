@@ -127,6 +127,20 @@ zk-attest/
 See "Running the server" in `API_CONTRACT.md` — it has the exact commands,
 the real first-run timing, and the idempotency caveat.
 
+## Testing
+
+```
+bash scripts/setup.sh   # build artifacts must exist first
+npm test
+```
+
+18 tests (`test/server.test.mjs`), run against the real exported Express
+`app` on an ephemeral port — no mocked proving or verification. Covers
+every endpoint's success path, every documented `failedAt` case
+(`threshold`, `blocked`, `attestation`), input validation, 404/CORS
+behavior, and that the audit log never records a private witness field.
+All 18 currently pass.
+
 ## Known gaps (stated plainly, not buried)
 
 - The custodian's private signing key in this demo is deterministic

@@ -360,7 +360,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error.' });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`ZK-Attest server listening on http://localhost:${PORT}`);
-});
+module.exports = { app };
+
+// Only bind a port when this file is run directly (`node server/index.js`),
+// not when it's imported — the test suite imports `app` and binds its own
+// ephemeral port so tests don't collide with a real running server.
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`ZK-Attest server listening on http://localhost:${PORT}`);
+  });
+}
