@@ -129,10 +129,52 @@ account 1003 with no tamper; `blocked` — line 108, confirmed via account
 `EdDSAPoseidonVerifier`/`ForceEqualIfEnabled` appearing in the call chain,
 confirmed via account 1003 + `tamper: true`.
 
+## Phase 2 — API restructuring
+
+All of the following was verified with real `curl` calls against a locally
+running `node server/index.js` on this machine, 2026-09-07 (see commit for
+exact transcripts):
+
+- **`GET /api/book` (unauthenticated, all-institutions) is gone** — confirmed
+  it now 404s. Replaced with `GET /api/book/treasury` (full institution list
+  + balances + blocked flags — the custodian's own view) and
+  `GET /api/book/exchange` (merkle root, tree depth, custodian public key,
+  circuit stats — no institution names or balances at all). This is the
+  actual fix for the item-7 audit finding from the earlier pass: the
+  Exchange pane's data source is now structurally incapable of returning
+  balance/identity data, not just conventionally expected not to ask for it.
+- **`POST /api/verify`** response field renamed `ok` -> `valid` per the
+  requested contract. Confirmed real: `{"valid":true,"verifyMs":14}` against
+  a genuine proof.
+- **`POST /api/tamper`** replaces the `tamper: true` flag that used to live
+  inside `/api/prove`. Takes an explicit `mode`: `"blocked_account"` (no
+  override needed — proves for the hardcoded-blocked account 1005) or
+  `"balance_mismatch"` (the original override-balance mechanism, against a
+  caller-supplied account). Confirmed real, both modes rejected as expected:
+  `blocked_account` -> `{"failedAt":"blocked", ...}`; `balance_mismatch`
+  (account 1003) -> `{"failedAt":"attestation", ...}` (not `"merkleRoot"` —
+  see the Phase 1 attestation note above for why).
+- **`GET /api/status`** returns `circuitVersion`, `constraintCount`
+  (read from `circuit-stats.json`, not hand-typed), and
+  `blocklistActive`/`attestationActive` (both `true`, describing what's
+  structurally baked into the compiled circuit — not runtime toggles).
+- **`GET /api/audit-log`** — in-memory only, cleared on restart, capped at
+  500 entries. Records `endpoint`, `accountId`, `result`, `reason`
+  (and `mode` for tamper calls) for every `/api/prove` and `/api/tamper`
+  call. Deliberately excludes balance, salt, blocked, the signature, and
+  all Merkle path data — none of that belongs in a log even though it's
+  already private-witness-only within a single request.
+- **Error handling**: every endpoint validates its inputs and returns 400
+  for missing/invalid fields or an unknown account, 422 for a witness that
+  fails to generate (an expected outcome, not a server error), 404 for an
+  unmatched route, and a caught-and-logged 500 (via Express error
+  middleware) for anything genuinely unexpected — confirmed none of these
+  paths silently 500 by triggering each one directly.
+- **CORS**: `cors()` with no origin restriction, confirmed via an actual
+  preflight `OPTIONS` request returning `Access-Control-Allow-Origin: *`.
+
 ## Pending from this pass
 
-- Phase 2 (API split, `/api/tamper`, `/api/status`, `/api/audit-log`, CORS)
-  — not started.
 - Phase 3 (`API_CONTRACT.md`) — not started.
 - Phase 4 (pitch/README claim rewrite) — blocked on locating an actual
   pitch document; none was found anywhere in this repo as of this session

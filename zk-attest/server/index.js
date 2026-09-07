@@ -4,12 +4,19 @@
 // picking which witness to build and which public signal to mutate for the
 // forged-proof demo. Every timing number below is measured with Date.now()
 // around the actual snarkjs call that produced it; none is hardcoded.
+//
+// CORS is open (`cors()` with no origin restriction) so a frontend running
+// on any other port/origin — the other team member's dev server — can call
+// every endpoint below with no configuration on their end. This mirrors the
+// medical-imaging backend elsewhere in this repo, which does the same for
+// the same reason: this is a local demo server, not a production API.
 
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
+const cors = require('cors');
 const snarkjs = require('snarkjs');
-const { witnessFor, getRoot, getBook, DEPTH } = require('../scripts/build-tree');
+const { witnessFor, getRoot, getCustodianPubKey, getBook, DEPTH } = require('../scripts/build-tree');
 
 const ROOT = path.join(__dirname, '..');
 const BUILD = path.join(ROOT, 'build');
@@ -29,6 +36,12 @@ for (const p of [WASM_PATH, ZKEY_PATH, VKEY_PATH]) {
 // Loaded once at boot, per the brief — not per request.
 const verificationKey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const circuitStats = fs.existsSync(STATS_PATH) ? JSON.parse(fs.readFileSync(STATS_PATH, 'utf8')) : null;
+
+// This value is not read from anywhere else — it's this file's own record
+// of which structural features are baked into circuits/settlement.circom as
+// committed. It has to be updated by hand if the circuit changes again,
+// same as circuitStats.source below says about itself.
+const CIRCUIT_VERSION = 'phase1-item2-attestation';
 
 // Re-verified against this exact compiled circuit by triggering each case
 // and reading the real witness-calculator error, on 2026-09-07 — not
@@ -95,121 +108,256 @@ function classifyWitnessFailure(err) {
   };
 }
 
-const app = express();
-app.use(express.json());
-app.use(express.static(path.join(ROOT, 'web')));
+// ---------------------------------------------------------------- audit log
+//
+// In-memory only — cleared on restart, not persisted anywhere. Every
+// /api/prove and /api/tamper call is recorded here regardless of outcome.
+// Only accountId, timestamp, result and reason are kept — never balance,
+// salt, blocked, the signature, or any tree/path data, all of which are
+// private witness fields that never belong in a log.
+const AUDIT_LOG_MAX_ENTRIES = 500;
+const auditLog = [];
 
-app.get('/api/book', async (req, res) => {
-  try {
-    const root = await getRoot();
-    res.json({
-      institutions: getBook(),
-      merkleRoot: root,
-      treeDepth: DEPTH,
-      circuitStats: circuitStats,
-    });
-  } catch (err) {
-    res.status(500).json({ error: String(err.message || err) });
-  }
-});
+function recordAudit(entry) {
+  auditLog.push({ timestamp: new Date().toISOString(), ...entry });
+  if (auditLog.length > AUDIT_LOG_MAX_ENTRIES) auditLog.shift();
+}
 
-app.post('/api/prove', async (req, res) => {
-  const { accountId, threshold, tradeId, tamper } = req.body || {};
-
-  if (accountId === undefined || threshold === undefined || tradeId === undefined) {
-    return res.status(400).json({ error: 'accountId, threshold and tradeId are required.' });
+// ------------------------------------------------------------- prove/verify
+//
+// Shared by both /api/prove and /api/tamper — builds a witness, calls
+// snarkjs, and returns either a proof or a classified failure. Does not
+// touch the response or the audit log itself; callers do that, since the
+// two endpoints report the outcome differently.
+async function attemptProve({ accountId, threshold, tradeId, overrideBalance }) {
+  const book = getBook();
+  const account = book.find((a) => a.accountId === Number(accountId));
+  if (!account) {
+    return { ok: false, status: 400, error: `No account ${accountId} in the custodian's book.` };
   }
 
   let witness;
   try {
-    const book = getBook();
-    const account = book.find((a) => a.accountId === Number(accountId));
-    if (!account) {
-      return res.status(400).json({ error: `No account ${accountId} in the custodian's book.` });
-    }
-    // The tamper toggle claims a balance that clears the threshold while the
-    // real, tree-committed balance for the account stays whatever it is —
-    // that mismatch is the whole point of the demo case.
-    const overrideBalance = tamper ? Math.max(Number(threshold) + 1, account.balance + 1) : undefined;
-
     witness = await witnessFor(Number(accountId), {
       threshold: Number(threshold),
       tradeId: Number(tradeId),
       overrideBalance,
     });
   } catch (err) {
-    return res.status(400).json({ error: String(err.message || err) });
+    return { ok: false, status: 400, error: String(err.message || err) };
   }
 
-  let proveResult;
   const t0 = Date.now();
   try {
-    proveResult = await snarkjs.groth16.fullProve(witness.input, WASM_PATH, ZKEY_PATH);
+    const proveResult = await snarkjs.groth16.fullProve(witness.input, WASM_PATH, ZKEY_PATH);
+    const proveMs = Date.now() - t0;
+    const { proof, publicSignals } = proveResult;
+    const proofBytes = Buffer.byteLength(JSON.stringify(proof), 'utf8');
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        proof,
+        publicSignals,
+        proveMs,
+        constraintCount: circuitStats ? circuitStats.nonLinearConstraints : null,
+        proofBytes,
+      },
+    };
   } catch (err) {
     const { failedAt, error } = classifyWitnessFailure(err);
-    return res.status(422).json({ error, failedAt });
+    return { ok: false, status: 422, error, failedAt };
   }
-  const proveMs = Date.now() - t0;
+}
 
-  const { proof, publicSignals } = proveResult;
-  const proofBytes = Buffer.byteLength(JSON.stringify(proof), 'utf8');
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(ROOT, 'web')));
 
+// ---------------------------------------------------------------- /api/book
+//
+// Split per party, server-enforced — the previous single GET /api/book
+// returned every institution's name and balance to any caller regardless of
+// which pane was asking. Treasury is the custodian's own view (everything
+// it knows). Exchange is deliberately minimal: the public commitment only,
+// no institution names or balances at all, since the whole point of the
+// protocol is that the Exchange starts (and stays) knowing nothing beyond
+// what a proof reveals.
+app.get('/api/book/treasury', async (req, res, next) => {
+  try {
+    const root = await getRoot();
+    const custodianPubKey = await getCustodianPubKey();
+    res.json({
+      institutions: getBook(),
+      merkleRoot: root,
+      treeDepth: DEPTH,
+      custodianPubKey,
+      circuitStats,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/book/exchange', async (req, res, next) => {
+  try {
+    const root = await getRoot();
+    const custodianPubKey = await getCustodianPubKey();
+    res.json({
+      merkleRoot: root,
+      treeDepth: DEPTH,
+      custodianPubKey,
+      circuitStats,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --------------------------------------------------------------- /api/prove
+app.post('/api/prove', async (req, res, next) => {
+  try {
+    const { accountId, threshold, tradeId } = req.body || {};
+    if (accountId === undefined || threshold === undefined || tradeId === undefined) {
+      return res.status(400).json({ error: 'accountId, threshold and tradeId are required.' });
+    }
+    if (!Number.isFinite(Number(accountId)) || !Number.isFinite(Number(threshold)) || !Number.isFinite(Number(tradeId))) {
+      return res.status(400).json({ error: 'accountId, threshold and tradeId must all be numbers.' });
+    }
+
+    const result = await attemptProve({ accountId, threshold, tradeId });
+    recordAudit({
+      endpoint: 'prove',
+      accountId: Number(accountId),
+      result: result.ok ? 'success' : 'rejected',
+      reason: result.ok ? null : result.failedAt || 'invalid_input',
+    });
+
+    if (!result.ok) {
+      const body = { error: result.error };
+      if (result.failedAt) body.failedAt = result.failedAt;
+      return res.status(result.status).json(body);
+    }
+    res.json(result.body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// -------------------------------------------------------------- /api/verify
+app.post('/api/verify', async (req, res, next) => {
+  try {
+    const { proof, publicSignals } = req.body || {};
+    if (!proof || !publicSignals) {
+      return res.status(400).json({ error: 'proof and publicSignals are required.' });
+    }
+
+    const t0 = Date.now();
+    let valid;
+    try {
+      valid = await snarkjs.groth16.verify(verificationKey, publicSignals, proof);
+    } catch (err) {
+      // A malformed proof/publicSignals shape is a verification failure, not
+      // a server error — snarkjs just can't parse it, which means it isn't
+      // a valid proof of anything.
+      valid = false;
+    }
+    const verifyMs = Date.now() - t0;
+    res.json({ valid, verifyMs });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// -------------------------------------------------------------- /api/tamper
+//
+// The kill-switch demo, as its own endpoint with an explicit `mode` rather
+// than a boolean flag buried in /api/prove — there are now two structurally
+// different tamper cases and they need to stay distinguishable:
+//   - "balance_mismatch": claims a different balance than the one the
+//     custodian actually signed for this account. Fails inside the EdDSA
+//     verifier (see AUDIT.md for why it moved there once attestation was
+//     added — it used to fail at the Merkle check).
+//   - "blocked_account": proves for a real, correctly-signed, above-threshold
+//     account that the custodian has flagged blocked. No override needed —
+//     account 1005 is hardcoded blocked in the tree itself. Fails at the
+//     blocked === 0 constraint.
+app.post('/api/tamper', async (req, res, next) => {
+  try {
+    const { mode, accountId, threshold, tradeId } = req.body || {};
+    if (mode !== 'balance_mismatch' && mode !== 'blocked_account') {
+      return res.status(400).json({ error: 'mode must be "balance_mismatch" or "blocked_account".' });
+    }
+    if (threshold === undefined || tradeId === undefined) {
+      return res.status(400).json({ error: 'threshold and tradeId are required.' });
+    }
+
+    let targetAccountId;
+    let overrideBalance;
+    if (mode === 'blocked_account') {
+      targetAccountId = 1005; // the demo's hardcoded blocked account — no override needed
+    } else {
+      if (accountId === undefined) {
+        return res.status(400).json({ error: 'accountId is required for mode "balance_mismatch".' });
+      }
+      const book = getBook();
+      const account = book.find((a) => a.accountId === Number(accountId));
+      if (!account) {
+        return res.status(400).json({ error: `No account ${accountId} in the custodian's book.` });
+      }
+      targetAccountId = Number(accountId);
+      overrideBalance = Math.max(Number(threshold) + 1, account.balance + 1);
+    }
+
+    const result = await attemptProve({ accountId: targetAccountId, threshold, tradeId, overrideBalance });
+    recordAudit({
+      endpoint: 'tamper',
+      accountId: targetAccountId,
+      result: result.ok ? 'success' : 'rejected',
+      reason: result.ok ? null : result.failedAt || 'invalid_input',
+      mode,
+    });
+
+    if (result.ok) {
+      // A tamper request that actually succeeds means the demo's own
+      // assumptions broke (e.g. someone raised the threshold below 1005's
+      // real balance) — report it plainly rather than hiding it as if it
+      // were the expected outcome.
+      return res.json({ ...result.body, mode, expectedRejection: true, actuallyRejected: false });
+    }
+    res.status(result.status).json({ error: result.error, failedAt: result.failedAt, mode, expectedRejection: true, actuallyRejected: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// -------------------------------------------------------------- /api/status
+app.get('/api/status', (req, res) => {
   res.json({
-    proof,
-    publicSignals,
-    proveMs,
+    circuitVersion: CIRCUIT_VERSION,
     constraintCount: circuitStats ? circuitStats.nonLinearConstraints : null,
-    proofBytes,
+    circuitStats,
+    blocklistActive: true,
+    attestationActive: true,
+    depth: DEPTH,
   });
 });
 
-app.post('/api/verify', async (req, res) => {
-  const { proof, publicSignals } = req.body || {};
-  if (!proof || !publicSignals) {
-    return res.status(400).json({ error: 'proof and publicSignals are required.' });
-  }
-
-  const t0 = Date.now();
-  let ok;
-  try {
-    ok = await snarkjs.groth16.verify(verificationKey, publicSignals, proof);
-  } catch (err) {
-    // A malformed proof/publicSignals shape is a verification failure, not a
-    // server error — snarkjs just can't parse it, which means it isn't a
-    // valid proof of anything.
-    ok = false;
-  }
-  const verifyMs = Date.now() - t0;
-
-  res.json({ ok, verifyMs });
+// ----------------------------------------------------------- /api/audit-log
+app.get('/api/audit-log', (req, res) => {
+  res.json({ entries: auditLog, count: auditLog.length, maxEntries: AUDIT_LOG_MAX_ENTRIES });
 });
 
-app.post('/api/verify-forged', async (req, res) => {
-  const { proof, publicSignals, mutate } = req.body || {};
-  if (!proof || !publicSignals || !mutate) {
-    return res.status(400).json({ error: 'proof, publicSignals and mutate are required.' });
-  }
-  if (mutate !== 'threshold' && mutate !== 'tradeId') {
-    return res.status(400).json({ error: 'mutate must be "threshold" or "tradeId".' });
-  }
+// ------------------------------------------------------------- 404 + errors
+app.use((req, res) => {
+  res.status(404).json({ error: `No route for ${req.method} ${req.path}.` });
+});
 
-  // publicSignals order is fixed by the circuit's declaration:
-  // component main {public [merkleRoot, threshold, tradeId]}
-  const index = mutate === 'threshold' ? 1 : 2;
-  const mutated = publicSignals.slice();
-  const original = BigInt(mutated[index]);
-  mutated[index] = (original + 1n).toString();
-
-  const t0 = Date.now();
-  let ok;
-  try {
-    ok = await snarkjs.groth16.verify(verificationKey, mutated, proof);
-  } catch (err) {
-    ok = false;
-  }
-  const verifyMs = Date.now() - t0;
-
-  res.json({ ok, verifyMs, mutated: mutate });
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Internal server error.' });
 });
 
 const PORT = process.env.PORT || 3000;
