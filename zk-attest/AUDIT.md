@@ -226,10 +226,25 @@ documented, PII-free set. All 18 pass:
 ℹ fail 0
 ```
 
+### 2. `scripts/setup.sh` idempotency fix
+
+Added STEP 3c: hashes `circuits/settlement.circom` (SHA-256) and compares
+against the hash recorded from the last build (`build/circuit.sha256`); also
+records and compares `POT_POWER` (`build/pot_power.txt`). A mismatch on
+either clears exactly the artifacts that are actually stale (zkey files for
+a circuit change; ptau + zkey files for a `POT_POWER` change) before the
+existing STEP 4/5 existence-checks run.
+
+**Verified real, not just written**: appended a comment line to
+`settlement.circom`, re-ran `setup.sh`, confirmed it printed the
+invalidation message and produced a `settlement_final.zkey` with a
+genuinely different SHA-256 (`519ea468...` -> `d7b0125e...`), in 17.6s (ptau
+correctly reused, only the zkey step re-ran — not the full 1m47s cold
+ceremony). Reverted the edit, re-ran again, confirmed the original zkey
+came back and all 18 tests still pass. A no-op re-run with nothing changed
+stays fast (2.65s) and doesn't false-positive-invalidate anything.
+
 ## Pending from this pass
 
-- None — all four phases requested for this task (circuit completion, API
-  restructuring, API documentation, final doc pass) are committed. Real
-  remaining gaps (not "pending work" but permanent, stated limitations)
-  are listed in `README.md`'s "Known gaps" section and in the Phase 2 note
-  above about `/api/tamper` not exercising a pure Merkle-only failure.
+- Item 3 (a dedicated pure-Merkle-only tamper mode) and item 4 (persistent
+  audit log) from the post-Phase-4 punch list — not started yet.

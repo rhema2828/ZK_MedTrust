@@ -113,7 +113,7 @@ not a post-hoc rejection of an otherwise-valid proof.
 ```
 zk-attest/
 ├── circuits/settlement.circom   # Merkle membership + threshold + block flag + custodian signature
-├── scripts/setup.sh             # compile + trusted setup, idempotent (see caveat in AUDIT.md)
+├── scripts/setup.sh             # compile + trusted setup, idempotent and stale-artifact aware
 ├── scripts/build-tree.js        # custodian tree, per-leaf signing, witness generation
 ├── server/index.js              # Express API — see API_CONTRACT.md
 ├── web/                         # placeholder — no frontend built here
@@ -124,8 +124,8 @@ zk-attest/
 
 ## Getting started
 
-See "Running the server" in `API_CONTRACT.md` — it has the exact commands,
-the real first-run timing, and the idempotency caveat.
+See "Running the server" in `API_CONTRACT.md` — it has the exact commands
+and the real first-run timing.
 
 ## Testing
 
@@ -150,11 +150,6 @@ All 18 currently pass.
 - No mechanism exists to prevent the *same* signed leaf from being used to
   generate proofs for many different trade IDs — see "trade-ID binding"
   above.
-- `scripts/setup.sh`'s existence-check idempotency does not detect a
-  changed circuit source; editing `circuits/settlement.circom` requires
-  manually clearing `build/s_0000.zkey`, `build/settlement_final.zkey`, and
-  `build/verification_key.json` before re-running, or you silently get a
-  zkey for the wrong circuit. Not fixed in this pass — see `AUDIT.md`.
 - `/api/audit-log` is in-memory only; it does not survive a server
   restart and is not a substitute for real persistent logging in any
   non-demo deployment.

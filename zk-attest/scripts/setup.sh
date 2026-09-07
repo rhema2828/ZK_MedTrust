@@ -6,6 +6,9 @@
 # ceremony, the circuit-specific Groth16 setup) is guarded by an existence
 # check, so a second run skips straight to "already have it" and finishes in
 # under a second. Safe to run on four different laptops, including a Mac.
+# Idempotent also means correct, not just fast: STEP 3c detects a changed
+# circuit source or a changed POT_POWER and clears the artifacts that would
+# otherwise silently be reused for the wrong circuit/ceremony size.
 #
 set -uo pipefail   # not -e: we want to handle a failed circom test-run ourselves
 
@@ -144,6 +147,33 @@ cat > "$BUILD/circuit-stats.json" <<EOF
 EOF
 echo "Wrote $BUILD/circuit-stats.json:"
 cat "$BUILD/circuit-stats.json"
+
+# ------------------------------------------------ staleness invalidation ---
+hr "STEP 3c  Invalidate stale artifacts if the circuit or ceremony size changed"
+# The existence checks below (STEP 4/5) only ask "does this file exist?" —
+# they don't ask "was it built from the circuit/ceremony-size that exists
+# right now?". Editing circuits/settlement.circom and re-running this script
+# used to silently keep the *previous* circuit's zkey, which snarkjs happily
+# used to produce proofs that verify against the wrong verification key for
+# the circuit you think you're running. This step catches both ways that can
+# happen: the circuit source changing, or POT_POWER changing (which is
+# exactly what happened when custodian attestation pushed constraints past
+# the original 2^12 ceremony's capacity).
+CIRCUIT_HASH_FILE="$BUILD/circuit.sha256"
+POT_POWER_FILE="$BUILD/pot_power.txt"
+CURRENT_CIRCUIT_HASH="$(sha256sum circuits/settlement.circom | awk '{print $1}')"
+
+if [ -f "$CIRCUIT_HASH_FILE" ] && [ "$(cat "$CIRCUIT_HASH_FILE")" != "$CURRENT_CIRCUIT_HASH" ]; then
+  echo "circuits/settlement.circom changed since the last build — clearing the zkey (it was built for the old circuit)."
+  rm -f "$BUILD/s_0000.zkey" "$BUILD/settlement_final.zkey" "$BUILD/verification_key.json"
+fi
+echo "$CURRENT_CIRCUIT_HASH" > "$CIRCUIT_HASH_FILE"
+
+if [ -f "$POT_POWER_FILE" ] && [ "$(cat "$POT_POWER_FILE")" != "$POT_POWER" ]; then
+  echo "POT_POWER changed ($(cat "$POT_POWER_FILE") -> $POT_POWER) since the last ceremony — clearing the old ptau and zkey."
+  rm -f "$BUILD"/pot*.ptau "$BUILD/s_0000.zkey" "$BUILD/settlement_final.zkey" "$BUILD/verification_key.json"
+fi
+echo "$POT_POWER" > "$POT_POWER_FILE"
 
 # ------------------------------------------------------- powers of tau -----
 hr "STEP 4  Powers-of-Tau ceremony (2^${POT_POWER} — local dev, NOT a trusted setup)"
