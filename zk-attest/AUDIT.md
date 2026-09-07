@@ -181,10 +181,26 @@ against a running server (not invented). Every documented `curl` command
 was then re-run end-to-end against a fresh server instance as a
 consistency check before this commit — all matched.
 
+## Phase 4 — README / final doc pass
+
+No separate pitch document was ever located (checked full-text across
+every `.md` file and by filename, repo-wide, at the start of this task —
+none existed). `zk-attest/README.md` was written instead — this was
+`checkpoint 6` from the original project brief, never completed in any
+prior session. It states, explicitly and using only the measured numbers
+above: Poseidon (not SHA-256), real proof size ~721-725 bytes (not "1KB"),
+no `verifier.sol`/gas claim (none exists), the block-flag mechanism
+described accurately as membership-with-a-flag rather than an independent
+non-membership proof, "Travel Rule" scope stated as what it actually is
+(a point-in-time screened/signed/not-blocklisted attestation, not FATF data
+transfer), and the custodian trust boundary (whoever holds the signing key
+is trusted; the circuit cannot verify the custodian was honest when it
+signed) stated as its own section rather than left implicit.
+
 ## Pending from this pass
 
-- Phase 4 (pitch/README claim rewrite) — blocked on locating an actual
-  pitch document; none was found anywhere in this repo as of this session
-  (checked full-text across every `.md` file and by filename). If one
-  exists outside this repo, it still needs to be provided before its claims
-  can be checked against code.
+- None — all four phases requested for this task (circuit completion, API
+  restructuring, API documentation, final doc pass) are committed. Real
+  remaining gaps (not "pending work" but permanent, stated limitations)
+  are listed in `README.md`'s "Known gaps" section and in the Phase 2 note
+  above about `/api/tamper` not exercising a pure Merkle-only failure.
