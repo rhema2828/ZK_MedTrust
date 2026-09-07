@@ -391,6 +391,165 @@ curl http://localhost:3000/api/witness/1001
 
 ---
 
+## Compliance verification (`/api/compliance/*`)
+
+A separate feature area — see `compliance/README.md` for the full design
+rationale (what the circuit does and does not prove, how the 20 criteria
+were actually determined, the AI-commentary methodology). Summary here:
+15 real cases from `compliance/compliance_cases.sql`, each screened
+against the 20 criteria named in the brief, with a real Groth16 circuit
+(`circuits/compliance.circom`) proving "this case passes at least N of its
+20 checks" without revealing which checks passed or the case's identity.
+
+---
+
+## `GET /api/compliance/cases`
+
+Every case, every criterion, real pass/fail, plus AI commentary for the 6
+qualitative criteria.
+
+**Response** `200`, real example (one case shown; all 15 have the same
+shape):
+```json
+{
+  "criteria": [
+    { "key": "kyc", "label": "Identity / KYC verification", "qualitative": false },
+    { "key": "counterparty_risk", "label": "Counterparty risk assessment", "qualitative": true }
+  ],
+  "cases": [
+    {
+      "caseId": "CASE-015",
+      "institution": "Granite Institutional",
+      "jurisdiction": "United States",
+      "amount": 2750000,
+      "currency": "USD",
+      "purpose": "Institutional transfer",
+      "criteria": [
+        { "key": "kyc", "label": "Identity / KYC verification", "value": "VERIFIED", "pass": true },
+        { "key": "sanctions", "label": "Sanctions screening", "value": "FLAGGED", "pass": false }
+      ],
+      "passCount": 11,
+      "totalCriteria": 20,
+      "aiCommentary": { "assessment": "FLAGGED", "reasoning": "..." }
+    }
+  ],
+  "merkleRoot": "15237313253217000773117768053259159702304645660594536862859764375378457060479",
+  "authorityPubKey": { "Ax": "...", "Ay": "..." },
+  "circuit": { "name": "compliance.circom", "numCriteria": 20 }
+}
+```
+14 of the 15 cases pass all 20 criteria; `CASE-015` passes 11.
+
+```
+curl http://localhost:3000/api/compliance/cases
+```
+
+---
+
+## `GET /api/compliance/cases/:caseId`
+
+One case, same shape as an entry in the list above.
+
+**Errors**: `404` if `:caseId` isn't in the dataset.
+
+---
+
+## `GET /api/compliance/witness/:caseId`
+
+**Demo-only transparency endpoint — not part of the proving/verification
+path**, same rationale as `GET /api/witness/:accountId`: reveals the real
+leaf construction (the 20 bits, salt, the two group hashes, the authority
+signature, the Merkle path) that the ZK proof otherwise keeps private.
+Safe here because every case's pass/fail statuses are already shown by
+`GET /api/compliance/cases`.
+
+**Response** `200`, real example (`GET /api/compliance/witness/CASE-015`):
+```json
+{
+  "caseId": "CASE-015",
+  "caseIndex": 15,
+  "bits": [1,1,0,1,1,1,1,1,0,0,1,0,0,1,0,1,1,0,0,0],
+  "salt": "...",
+  "group1": "...",
+  "group2": "...",
+  "leafHash": "8862695864371641522330328635739295862485136842033484321846637565817417966683",
+  "attestation": { "R8x": "...", "R8y": "...", "S": "..." },
+  "pathElements": ["...", "... (4 total, one per tree depth)"],
+  "pathIndices": [1, 1, 1, 0],
+  "merkleRoot": "15237313253217000773117768053259159702304645660594536862859764375378457060479",
+  "authorityPubKey": { "Ax": "...", "Ay": "..." }
+}
+```
+
+**Errors**: `404` if `:caseId` isn't in the dataset.
+
+---
+
+## `POST /api/compliance/prove`
+
+**Request body**:
+```json
+{ "caseId": "CASE-001", "passThreshold": 18, "proofNonce": 100 }
+```
+
+**Response** `200`, real example:
+```json
+{
+  "proof": { "pi_a": ["..."], "pi_b": ["..."], "pi_c": ["..."], "protocol": "groth16", "curve": "bn128" },
+  "publicSignals": [
+    "15237313253217000773117768053259159702304645660594536862859764375378457060479",
+    "18",
+    "100",
+    "20424261633327059703702855138723663857493306835095556906646155393290646987493",
+    "16059506587804364090631803130570957208259215768493448381218677197044808892158"
+  ],
+  "proveMs": 903,
+  "proofBytes": 723,
+  "numCriteria": 20
+}
+```
+`publicSignals` is `[merkleRoot, passThreshold, proofNonce, authorityPubKeyAx, authorityPubKeyAy]`.
+
+**Errors**:
+- `400` — missing/non-numeric fields, or an unknown `caseId`.
+- `422` — the witness cannot be constructed (real example: `CASE-015` at `passThreshold: 18` — it only passes 11 of 20):
+  ```json
+  { "error": "The case is genuinely in the compliance-authority tree, but it does not pass enough of the 20 criteria to clear the claimed threshold. The proof cannot be constructed.", "failedAt": "threshold" }
+  ```
+- `503` — the compliance circuit's build artifacts are missing (`bash scripts/setup_compliance.sh` hasn't been run).
+
+```
+curl -X POST http://localhost:3000/api/compliance/prove \
+  -H 'content-type: application/json' \
+  -d '{"caseId":"CASE-001","passThreshold":18,"proofNonce":100}'
+```
+
+---
+
+## `POST /api/compliance/verify`
+
+Same contract as `POST /api/verify`, against the compliance circuit's own verification key.
+
+```
+curl -X POST http://localhost:3000/api/compliance/verify \
+  -H 'content-type: application/json' \
+  -d '{"proof":{...},"publicSignals":[...]}'
+```
+
+---
+
+## `GET /api/compliance/audit-log`
+
+Same contract as `GET /api/audit-log`, persisted separately to
+`build/compliance-audit-log.jsonl`. Records `caseId`, `passThreshold`,
+`result`, `reason` — never the 20 bits, salt, or signature.
+
+```
+curl http://localhost:3000/api/compliance/audit-log
+```
+
+---
+
 ## Errors not tied to a specific endpoint
 
 **Unknown route** — `404`, real example:

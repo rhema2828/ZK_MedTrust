@@ -203,6 +203,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(ROOT, 'web')));
 
+// Compliance-verification API (20-criteria dataset, its own circuit) —
+// a separate router mounted here rather than folded into this file, since
+// it has its own witness shape, its own circuit, and its own audit log.
+app.use(require('./compliance-routes').router);
+
 // ---------------------------------------------------------------- /api/book
 //
 // Split per party, server-enforced — the previous single GET /api/book

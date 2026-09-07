@@ -132,3 +132,58 @@ body::after { content:''; position:fixed; inset:0; pointer-events:none; z-index:
   .audit-head { display:none; }
   .pipeline-boundary { grid-template-columns:1fr; }
 }
+
+/* ---------------------------------------------------------------------
+   Compliance verification dashboard (app/compliance) — 15 cases by 20
+   criteria matrix, live proof console, pipeline, audit log. Reuses the
+   console-card, console-grid, pipeline-step, boundary-col, audit-row,
+   eyebrow, section-intro and scene rules above wholesale.
+--------------------------------------------------------------------- */
+.compliance-overview { padding-top:100px; padding-bottom:60px; }
+.compliance-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line); border:1px solid var(--line); margin-top:50px; }
+.compliance-stats > div { background:var(--void); padding:22px 20px; }
+.compliance-stats small { display:block; color:var(--muted); font:9px 'DM Mono',monospace; letter-spacing:.08em; }
+.compliance-stats strong { display:block; margin-top:10px; font-size:22px; font-weight:500; }
+.compliance-stats strong.mono { font-size:13px; font-family:'DM Mono',monospace; word-break:break-all; }
+
+.compliance-matrix-section { padding-top:20px; padding-bottom:70px; display:grid; grid-template-columns:1.6fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); align-items:start; }
+.compliance-matrix-wrap { background:var(--void); padding:24px; overflow-x:auto; }
+.compliance-matrix { border-collapse:collapse; font:10px 'DM Mono',monospace; white-space:nowrap; }
+.compliance-matrix th, .compliance-matrix td { padding:6px 7px; text-align:center; border-bottom:1px solid var(--line); }
+.compliance-matrix thead th { color:var(--muted); font-weight:400; letter-spacing:.04em; vertical-align:bottom; }
+.compliance-matrix thead th sup { color:var(--cyan); margin-left:2px; }
+.matrix-case-col { text-align:left !important; padding-right:16px !important; }
+.matrix-case-col strong { display:block; font-size:11px; }
+.matrix-case-col span { display:block; color:var(--muted); font-size:9px; margin-top:2px; }
+.compliance-matrix tbody tr { cursor:pointer; }
+.compliance-matrix tbody tr:hover { background:rgba(255,255,255,.03); }
+.compliance-matrix tbody tr.selected { background:rgba(141,232,229,.06); }
+.compliance-matrix td.pass { color:var(--green); }
+.compliance-matrix td.fail { color:var(--red); font-weight:700; }
+.matrix-score { font-weight:500; }
+.matrix-score.perfect { color:var(--green); }
+.matrix-score.flagged { color:var(--red); }
+.matrix-legend { margin-top:16px; color:var(--muted); font-size:10px; }
+
+.criteria-list { margin-top:24px; display:flex; flex-direction:column; }
+.criteria-row { display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:11px; }
+.criteria-row span { color:var(--muted); }
+.criteria-row.pass strong { color:var(--green); font-weight:400; }
+.criteria-row.fail strong { color:var(--red); font-weight:500; }
+
+.ai-commentary { margin-top:22px; padding:16px 18px; border:1px solid var(--line); }
+.ai-commentary .eyebrow { display:block; margin-bottom:10px; }
+.ai-commentary p { margin:0; color:var(--muted); font-size:11.5px; line-height:1.6; }
+.ai-commentary.consistent { border-color:rgba(131,214,175,.35); }
+.ai-commentary.consistent .eyebrow { color:var(--green); }
+.ai-commentary.flagged { border-color:rgba(184,109,118,.35); }
+.ai-commentary.flagged .eyebrow { color:var(--red); }
+
+.compliance-console { padding-top:20px; padding-bottom:120px; }
+.compliance-error, .compliance-loading { max-width:1440px; margin:140px auto; padding:0 clamp(22px,7vw,120px); display:flex; align-items:center; gap:10px; color:var(--muted); font:12px 'DM Mono',monospace; }
+.compliance-error { color:var(--red); }
+
+@media (max-width:900px) {
+  .compliance-stats { grid-template-columns:1fr 1fr; }
+  .compliance-matrix-section { grid-template-columns:1fr; }
+}
