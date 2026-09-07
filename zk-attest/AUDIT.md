@@ -173,9 +173,16 @@ exact transcripts):
 - **CORS**: `cors()` with no origin restriction, confirmed via an actual
   preflight `OPTIONS` request returning `Access-Control-Allow-Origin: *`.
 
+## Phase 3 — API documentation
+
+`API_CONTRACT.md` written: every endpoint, request/response shape, and
+error shape, with real example JSON captured from actual `curl` calls
+against a running server (not invented). Every documented `curl` command
+was then re-run end-to-end against a fresh server instance as a
+consistency check before this commit — all matched.
+
 ## Pending from this pass
 
-- Phase 3 (`API_CONTRACT.md`) — not started.
 - Phase 4 (pitch/README claim rewrite) — blocked on locating an actual
   pitch document; none was found anywhere in this repo as of this session
   (checked full-text across every `.md` file and by filename). If one
