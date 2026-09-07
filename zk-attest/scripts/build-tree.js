@@ -173,13 +173,22 @@ function pathFor(tree, slot) {
 // on its own, at the `blocked === 0` constraint — a genuinely-signed,
 // genuinely-in-tree, above-threshold account that the custodian has simply
 // flagged. Distinct from a balance mismatch.
-async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {}) {
+//
+// `corruptPath`, when true, flips one bit of the first pathElement — the
+// balance, salt, blocked flag and signature are all left genuine, so this
+// is the one tamper case that exercises the Merkle check in isolation
+// (mp.root === merkleRoot) rather than the signature check, since nothing
+// about the leaf itself is wrong, only the claimed path to the root.
+async function witnessFor(accountId, { threshold, tradeId, overrideBalance, corruptPath } = {}) {
   const tree = await buildTree();
   const slot = slotIndexOf(tree, accountId);
   const account = tree.accounts[slot];
   const { pathElements, pathIndices } = pathFor(tree, slot);
 
   const balanceForWitness = overrideBalance !== undefined ? BigInt(overrideBalance) : BigInt(account.balance);
+  const pathElementsForWitness = corruptPath
+    ? [(BigInt(pathElements[0]) + 1n).toString(), ...pathElements.slice(1).map(String)]
+    : pathElements.map(String);
 
   return {
     input: {
@@ -190,7 +199,7 @@ async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {
       attestationR8x: account.attestation.R8x.toString(),
       attestationR8y: account.attestation.R8y.toString(),
       attestationS: account.attestation.S.toString(),
-      pathElements: pathElements.map(String),
+      pathElements: pathElementsForWitness,
       pathIndices: pathIndices.map(String),
       merkleRoot: tree.root.toString(),
       threshold: String(threshold),
@@ -201,6 +210,7 @@ async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {
     tree,
     account,
     tamperedBalance: overrideBalance !== undefined,
+    tamperedPath: Boolean(corruptPath),
   };
 }
 

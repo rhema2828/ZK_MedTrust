@@ -209,13 +209,13 @@ curl -X POST http://localhost:3000/api/verify \
 
 ## `POST /api/tamper`
 
-The kill-switch demo. Two distinct, structurally different rejection cases,
-selected via `mode`:
+The kill-switch demo. Three distinct, structurally different rejection cases, selected via `mode`:
 
 - **`"blocked_account"`** — proves for account 1005, a real, correctly-signed, above-threshold account that the custodian has flagged blocked in its own signed leaf. No `accountId` needed (always 1005). `threshold` and `tradeId` still required.
 - **`"balance_mismatch"`** — claims a balance for the given `accountId` higher than what the custodian actually signed. Requires `accountId`, `threshold`, `tradeId`.
+- **`"merkle_mismatch"`** — a genuinely-signed, genuinely-above-threshold, genuinely-unblocked account, but with its Merkle path corrupted. `accountId` optional (defaults to 1001); `threshold`, `tradeId` required. This is the one mode where the leaf itself is entirely real — only the claimed path to the root is wrong — so it isolates the Merkle check on its own, distinct from `balance_mismatch`, which now fails at the signature check instead (see below).
 
-Both modes are *expected* to be rejected — that's the point of the demo. The response always names which one actually happened via `failedAt` and `actuallyRejected`.
+All three modes are *expected* to be rejected — that's the point of the demo. The response always names which one actually happened via `failedAt` and `actuallyRejected`.
 
 **Request body** (`blocked_account`):
 ```json
@@ -250,12 +250,28 @@ Both modes are *expected* to be rejected — that's the point of the demo. The r
 ```
 Note `failedAt` is `"attestation"`, not `"merkleRoot"` — since the custodian's signature now covers the claimed balance, a balance mismatch is caught by the signature check before the Merkle check is ever reached. (Before custodian attestation existed, this same case failed at the Merkle check instead — see `AUDIT.md` for the real, measured before/after.)
 
+**Request body** (`merkle_mismatch`):
+```json
+{ "mode": "merkle_mismatch", "accountId": 1001, "threshold": 1000000, "tradeId": 1 }
+```
+
+**Response** `422`, real example:
+```json
+{
+  "error": "The account named in this witness does not correspond to a leaf that hashes into the custodian's attested tree. The proof cannot be constructed.",
+  "failedAt": "merkleRoot",
+  "mode": "merkle_mismatch",
+  "expectedRejection": true,
+  "actuallyRejected": true
+}
+```
+
 If a tamper request were ever to unexpectedly *succeed* (e.g. a caller raises `threshold` below 1005's real balance, which would make "blocked" the only thing stopping it — an artificial setup, but possible), the response is `200` with `actuallyRejected: false` rather than silently reporting it as a rejection.
 
 **Errors**:
 - `400` — invalid/missing `mode`, missing `threshold`/`tradeId`, missing `accountId` for `balance_mismatch`, or an unknown account:
   ```json
-  { "error": "mode must be \"balance_mismatch\" or \"blocked_account\"." }
+  { "error": "mode must be \"balance_mismatch\", \"blocked_account\", or \"merkle_mismatch\"." }
   ```
 
 ```
@@ -266,6 +282,10 @@ curl -X POST http://localhost:3000/api/tamper \
 curl -X POST http://localhost:3000/api/tamper \
   -H 'content-type: application/json' \
   -d '{"mode":"balance_mismatch","accountId":1003,"threshold":1000000,"tradeId":1}'
+
+curl -X POST http://localhost:3000/api/tamper \
+  -H 'content-type: application/json' \
+  -d '{"mode":"merkle_mismatch","accountId":1001,"threshold":1000000,"tradeId":1}'
 ```
 
 ---
@@ -302,7 +322,7 @@ curl http://localhost:3000/api/status
 
 ## `GET /api/audit-log`
 
-In-memory only — resets to empty on every server restart, not written to disk. Records every `/api/prove` and `/api/tamper` call, capped at the 500 most recent. Deliberately excludes balance, salt, blocked, the signature, and Merkle path data — only enough to know what was asked and what happened.
+Persisted to `build/audit-log.jsonl` (append-only, one JSON object per line) — a server restart does not lose history; the in-memory cache is reloaded from that file at boot. This endpoint serves at most the 500 most recent entries regardless of how large the underlying file grows. Records every `/api/prove` and `/api/tamper` call. Deliberately excludes balance, salt, blocked, the signature, and Merkle path data — only enough to know what was asked and what happened.
 
 **Request**: no body.
 

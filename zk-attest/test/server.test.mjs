@@ -192,6 +192,18 @@ test('POST /api/tamper mode=balance_mismatch requires accountId', async () => {
   assert.match(body.error, /accountId is required/);
 });
 
+test('POST /api/tamper mode=merkle_mismatch fails at the Merkle check in isolation (real balance, real signature, wrong path)', async () => {
+  const { status, body } = await post('/api/tamper', { mode: 'merkle_mismatch', accountId: 1002, threshold: 1000000, tradeId: 1 });
+  assert.equal(status, 422);
+  assert.equal(body.failedAt, 'merkleRoot');
+});
+
+test('POST /api/tamper mode=merkle_mismatch defaults to account 1001 when accountId is omitted', async () => {
+  const { status, body } = await post('/api/tamper', { mode: 'merkle_mismatch', threshold: 1000000, tradeId: 1 });
+  assert.equal(status, 422);
+  assert.equal(body.failedAt, 'merkleRoot');
+});
+
 // --------------------------------------------------------------------- misc
 
 test('unknown route returns 404, not a silent crash', async () => {

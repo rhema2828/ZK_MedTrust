@@ -90,9 +90,9 @@ The circuit evolved in three measured stages (original -> +blocklist flag ->
 proving time roughly doubled and why the trusted-setup ceremony size had to
 be bumped from 2^12 to 2^14, is in `AUDIT.md`.
 
-## The two rejection cases
+## The three rejection cases
 
-`POST /api/tamper` exercises two structurally different, real rejections:
+`POST /api/tamper` exercises three structurally different, real rejections:
 
 - **`blocked_account`** — a real, correctly-signed, above-threshold account
   (1005) that the custodian has flagged blocked. Fails at the circuit's
@@ -104,6 +104,11 @@ be bumped from 2^12 to 2^14, is in `AUDIT.md`.
   Merkle path is even evaluated. (Before custodian attestation existed,
   this same tamper case failed at the Merkle check instead; see `AUDIT.md`
   for the measured before/after.)
+- **`merkle_mismatch`** — a genuinely-signed, genuinely-above-threshold,
+  genuinely-unblocked account, but with one Merkle sibling corrupted.
+  Everything about the leaf is real; only the claimed path to the root is
+  wrong. This is the one case that isolates the Merkle check on its own,
+  now that `balance_mismatch` no longer reaches it.
 
 Both are real hard-constraint failures — witness generation itself fails,
 not a post-hoc rejection of an otherwise-valid proof.
@@ -134,12 +139,12 @@ bash scripts/setup.sh   # build artifacts must exist first
 npm test
 ```
 
-18 tests (`test/server.test.mjs`), run against the real exported Express
+20 tests (`test/server.test.mjs`), run against the real exported Express
 `app` on an ephemeral port — no mocked proving or verification. Covers
 every endpoint's success path, every documented `failedAt` case
-(`threshold`, `blocked`, `attestation`), input validation, 404/CORS
-behavior, and that the audit log never records a private witness field.
-All 18 currently pass.
+(`threshold`, `blocked`, `attestation`, `merkleRoot`), input validation,
+404/CORS behavior, and that the audit log never records a private witness
+field. All 20 currently pass.
 
 ## Known gaps (stated plainly, not buried)
 
@@ -150,6 +155,7 @@ All 18 currently pass.
 - No mechanism exists to prevent the *same* signed leaf from being used to
   generate proofs for many different trade IDs — see "trade-ID binding"
   above.
-- `/api/audit-log` is in-memory only; it does not survive a server
-  restart and is not a substitute for real persistent logging in any
-  non-demo deployment.
+- The trusted setup ceremony (`scripts/setup.sh`) is a local, single-party
+  Powers-of-Tau run — real, but explicitly not a real multi-party trusted
+  setup. Fine for a demo; would need a genuine ceremony (or a
+  universal-setup scheme) for anything beyond one.

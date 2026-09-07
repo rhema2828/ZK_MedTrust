@@ -117,15 +117,18 @@ triggered by the same override. A pure Merkle-only failure (line 99) would
 require a different kind of tamper (e.g. a corrupted `pathElements` array)
 that the current API doesn't expose. Noted as a real gap, not fixed in this
 pass — Phase 2's `/api/tamper` redesign is the place to decide whether it's
-worth adding.
+worth adding. **Fixed in the post-Phase-4 hardening pass below (item 3,
+`mode: "merkle_mismatch"`) — this paragraph is left as-is to record what was
+true at the time, not corrected in place.**
 
 Real failure lines/signatures for this stage, each confirmed by triggering
 it and reading the actual witness-calculator error (not inferred from
 source, and not reused from the pre-attestation stage above, since every
 line number shifted): `merkleRoot` — line 99, not independently exercised by
-any current API call (see above); `threshold` — line 105, confirmed via
-account 1003 with no tamper; `blocked` — line 108, confirmed via account
-1005; `attestation` — no fixed line number, detected via
+any current API call at the time this was written (see above, and see item
+3 below for the fix); `threshold` — line 105, confirmed via account 1003
+with no tamper; `blocked` — line 108, confirmed via account 1005;
+`attestation` — no fixed line number, detected via
 `EdDSAPoseidonVerifier`/`ForceEqualIfEnabled` appearing in the call chain,
 confirmed via account 1003 + `tamper: true`.
 
@@ -244,7 +247,46 @@ ceremony). Reverted the edit, re-ran again, confirmed the original zkey
 came back and all 18 tests still pass. A no-op re-run with nothing changed
 stays fast (2.65s) and doesn't false-positive-invalidate anything.
 
+### 3. `mode: "merkle_mismatch"` — isolating the Merkle check
+
+`build-tree.js`'s `witnessFor` gained a `corruptPath` option: flips one bit
+of the first `pathElement` while leaving balance, salt, blocked, and the
+signature all genuine. `POST /api/tamper` exposes this as
+`mode: "merkle_mismatch"` (defaults to account 1001 if `accountId` is
+omitted). This is the one tamper mode where everything about the leaf
+itself is real — only the claimed path to the root is wrong — so it's the
+only way left to demonstrate the Merkle check failing on its own, now that
+`balance_mismatch` is caught by the signature check first.
+
+**Verified real**: `POST /api/tamper {"mode":"merkle_mismatch","accountId":1002,...}`
+returns `{"failedAt":"merkleRoot", ...}` — confirmed distinct from both
+`"attestation"` (balance_mismatch) and `"blocked"` (blocked_account).
+Regression-checked that a normal honest `/api/prove` call and both existing
+tamper modes still behave identically after this change. Two new tests
+added to `test/server.test.mjs` (20/20 passing total).
+
+### 4. Persistent audit log
+
+`recordAudit` now appends every entry to `build/audit-log.jsonl` (one JSON
+object per line) in addition to the existing in-memory array, and the
+in-memory array is now seeded from that file at server startup — so a
+restart no longer loses history, only the endpoint's in-memory cap (500)
+still applies to what's *served*, not what's *kept*. File writes are
+best-effort (wrapped in try/catch, logged via `console.error`, never fail
+the underlying `/api/prove` or `/api/tamper` request) since audit logging
+is not on the critical path of proving.
+
+**Verified real**: made 3 calls, restarted the server, confirmed
+`GET /api/audit-log` still returned all 3 prior entries plus new ones
+appended after restart — genuinely tested by killing and restarting the
+process, not just re-reading the same in-memory array.
+
 ## Pending from this pass
 
-- Item 3 (a dedicated pure-Merkle-only tamper mode) and item 4 (persistent
-  audit log) from the post-Phase-4 punch list — not started yet.
+- None. All four items from the post-Phase-4 punch list are done: real
+  automated tests (18 -> 20 after item 3), `setup.sh` stale-artifact
+  detection, an isolated Merkle-check tamper mode, and a persistent audit
+  log. Remaining stated limitations (custodian key custody, trade-ID reuse
+  across proofs, the local-dev-only trusted setup ceremony) are inherent to
+  a hackathon demo and documented in `README.md`'s "Known gaps" rather than
+  "fixed" here — they'd need real infrastructure decisions, not a code fix.

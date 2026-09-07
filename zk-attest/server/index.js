@@ -110,17 +110,44 @@ function classifyWitnessFailure(err) {
 
 // ---------------------------------------------------------------- audit log
 //
-// In-memory only — cleared on restart, not persisted anywhere. Every
-// /api/prove and /api/tamper call is recorded here regardless of outcome.
-// Only accountId, timestamp, result and reason are kept — never balance,
-// salt, blocked, the signature, or any tree/path data, all of which are
-// private witness fields that never belong in a log.
+// Persisted to build/audit-log.jsonl (one JSON object per line, append-only)
+// so a server restart doesn't lose history — the in-memory array is seeded
+// from that file at boot. AUDIT_LOG_MAX_ENTRIES only caps what GET
+// /api/audit-log *serves*; the file itself is never truncated. Every
+// /api/prove and /api/tamper call is recorded regardless of outcome. Only
+// accountId, timestamp, result, reason (and mode, for tamper calls) are
+// kept — never balance, salt, blocked, the signature, or any tree/path
+// data, all of which are private witness fields that never belong in a log.
+const AUDIT_LOG_PATH = path.join(BUILD, 'audit-log.jsonl');
 const AUDIT_LOG_MAX_ENTRIES = 500;
-const auditLog = [];
+
+function loadAuditLog() {
+  if (!fs.existsSync(AUDIT_LOG_PATH)) return [];
+  const lines = fs.readFileSync(AUDIT_LOG_PATH, 'utf8').split('\n').filter(Boolean);
+  const entries = [];
+  for (const line of lines) {
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // A truncated last line (e.g. from a hard-killed process mid-write)
+      // is skipped rather than crashing server startup over one bad row.
+    }
+  }
+  return entries.slice(-AUDIT_LOG_MAX_ENTRIES);
+}
+
+const auditLog = loadAuditLog();
 
 function recordAudit(entry) {
-  auditLog.push({ timestamp: new Date().toISOString(), ...entry });
+  const full = { timestamp: new Date().toISOString(), ...entry };
+  auditLog.push(full);
   if (auditLog.length > AUDIT_LOG_MAX_ENTRIES) auditLog.shift();
+  try {
+    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(full) + '\n');
+  } catch (err) {
+    // Best-effort: audit logging must never fail the request it's logging.
+    console.error('Failed to persist audit log entry:', err);
+  }
 }
 
 // ------------------------------------------------------------- prove/verify
@@ -129,7 +156,7 @@ function recordAudit(entry) {
 // snarkjs, and returns either a proof or a classified failure. Does not
 // touch the response or the audit log itself; callers do that, since the
 // two endpoints report the outcome differently.
-async function attemptProve({ accountId, threshold, tradeId, overrideBalance }) {
+async function attemptProve({ accountId, threshold, tradeId, overrideBalance, corruptPath }) {
   const book = getBook();
   const account = book.find((a) => a.accountId === Number(accountId));
   if (!account) {
@@ -142,6 +169,7 @@ async function attemptProve({ accountId, threshold, tradeId, overrideBalance }) 
       threshold: Number(threshold),
       tradeId: Number(tradeId),
       overrideBalance,
+      corruptPath,
     });
   } catch (err) {
     return { ok: false, status: 400, error: String(err.message || err) };
@@ -273,8 +301,9 @@ app.post('/api/verify', async (req, res, next) => {
 // -------------------------------------------------------------- /api/tamper
 //
 // The kill-switch demo, as its own endpoint with an explicit `mode` rather
-// than a boolean flag buried in /api/prove — there are now two structurally
-// different tamper cases and they need to stay distinguishable:
+// than a boolean flag buried in /api/prove — there are now three
+// structurally different tamper cases and they need to stay
+// distinguishable:
 //   - "balance_mismatch": claims a different balance than the one the
 //     custodian actually signed for this account. Fails inside the EdDSA
 //     verifier (see AUDIT.md for why it moved there once attestation was
@@ -283,11 +312,17 @@ app.post('/api/verify', async (req, res, next) => {
 //     account that the custodian has flagged blocked. No override needed —
 //     account 1005 is hardcoded blocked in the tree itself. Fails at the
 //     blocked === 0 constraint.
+//   - "merkle_mismatch": a genuinely-signed, genuinely-above-threshold,
+//     genuinely-unblocked account, but with one Merkle sibling corrupted —
+//     everything about the leaf itself is real, only the claimed path to
+//     the root is wrong. This is the one mode that isolates the Merkle
+//     check on its own, now that balance_mismatch no longer reaches it
+//     (the signature check catches that case first).
 app.post('/api/tamper', async (req, res, next) => {
   try {
     const { mode, accountId, threshold, tradeId } = req.body || {};
-    if (mode !== 'balance_mismatch' && mode !== 'blocked_account') {
-      return res.status(400).json({ error: 'mode must be "balance_mismatch" or "blocked_account".' });
+    if (mode !== 'balance_mismatch' && mode !== 'blocked_account' && mode !== 'merkle_mismatch') {
+      return res.status(400).json({ error: 'mode must be "balance_mismatch", "blocked_account", or "merkle_mismatch".' });
     }
     if (threshold === undefined || tradeId === undefined) {
       return res.status(400).json({ error: 'threshold and tradeId are required.' });
@@ -295,8 +330,16 @@ app.post('/api/tamper', async (req, res, next) => {
 
     let targetAccountId;
     let overrideBalance;
+    let corruptPath;
     if (mode === 'blocked_account') {
       targetAccountId = 1005; // the demo's hardcoded blocked account — no override needed
+    } else if (mode === 'merkle_mismatch') {
+      targetAccountId = accountId !== undefined ? Number(accountId) : 1001; // any genuinely-clear account works; 1001 by default
+      const book = getBook();
+      if (!book.find((a) => a.accountId === targetAccountId)) {
+        return res.status(400).json({ error: `No account ${targetAccountId} in the custodian's book.` });
+      }
+      corruptPath = true;
     } else {
       if (accountId === undefined) {
         return res.status(400).json({ error: 'accountId is required for mode "balance_mismatch".' });
@@ -310,7 +353,7 @@ app.post('/api/tamper', async (req, res, next) => {
       overrideBalance = Math.max(Number(threshold) + 1, account.balance + 1);
     }
 
-    const result = await attemptProve({ accountId: targetAccountId, threshold, tradeId, overrideBalance });
+    const result = await attemptProve({ accountId: targetAccountId, threshold, tradeId, overrideBalance, corruptPath });
     recordAudit({
       endpoint: 'tamper',
       accountId: targetAccountId,
