@@ -3,6 +3,7 @@ pragma circom 2.1.6;
 include "node_modules/circomlib/circuits/poseidon.circom";
 include "node_modules/circomlib/circuits/comparators.circom";
 include "node_modules/circomlib/circuits/mux1.circom";
+include "node_modules/circomlib/circuits/eddsaposeidon.circom";
 
 // Verifies a Merkle path from leaf to root using Poseidon.
 template MerklePath(depth) {
@@ -50,10 +51,21 @@ template Settlement(depth) {
     signal input pathElements[depth];
     signal input pathIndices[depth];
 
+    // Custodian attestation: an EdDSA-Poseidon signature over this exact
+    // leaf (accountId, balance, salt, blocked), produced off-circuit by the
+    // custodian's private key. Private witness — the verifier only learns
+    // that *some* valid signature under the known custodian public key
+    // exists for this leaf, never anything about the signature beyond that.
+    signal input attestationR8x;
+    signal input attestationR8y;
+    signal input attestationS;
+
     // ---- public inputs: all the verifier ever sees ----
     signal input merkleRoot;
     signal input threshold;
     signal input tradeId;
+    signal input custodianPubKeyAx;
+    signal input custodianPubKeyAy;
 
     // 0. blocked must be a bit (0 = clear, 1 = sanctioned/blocked)
     blocked * (blocked - 1) === 0;
@@ -64,6 +76,18 @@ template Settlement(depth) {
     leaf.inputs[1] <== balance;
     leaf.inputs[2] <== salt;
     leaf.inputs[3] <== blocked;
+
+    // 1b. the leaf must carry a valid custodian signature: a balance or
+    // block-status claim with no matching signature from the known
+    // custodian key cannot produce a witness at all.
+    component sigVerifier = EdDSAPoseidonVerifier();
+    sigVerifier.enabled <== 1;
+    sigVerifier.Ax <== custodianPubKeyAx;
+    sigVerifier.Ay <== custodianPubKeyAy;
+    sigVerifier.R8x <== attestationR8x;
+    sigVerifier.R8y <== attestationR8y;
+    sigVerifier.S <== attestationS;
+    sigVerifier.M <== leaf.out;
 
     // 2. that leaf is in the custodian-attested tree
     component mp = MerklePath(depth);
@@ -88,4 +112,4 @@ template Settlement(depth) {
     tradeIdBound <== tradeId * tradeId;
 }
 
-component main {public [merkleRoot, threshold, tradeId]} = Settlement(8);
+component main {public [merkleRoot, threshold, tradeId, custodianPubKeyAx, custodianPubKeyAy]} = Settlement(8);

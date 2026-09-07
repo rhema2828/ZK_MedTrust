@@ -30,24 +30,43 @@ for (const p of [WASM_PATH, ZKEY_PATH, VKEY_PATH]) {
 const verificationKey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
 const circuitStats = fs.existsSync(STATS_PATH) ? JSON.parse(fs.readFileSync(STATS_PATH, 'utf8')) : null;
 
-// The circuit has three distinct hard-constraint assert sites (re-verified
-// against this exact compiled circuit by triggering each one and reading
-// the real witness-calculator error, on 2026-09-07 — not guessed, and not
-// reused from a prior circuit revision, since adding the `blocked` signal
-// shifted every line number below the leaf computation):
-// line 75 is the Merkle-path check, line 81 is the balance comparator,
-// line 84 is the custodian block-flag check. A witness that fails to
-// generate at all means one of these constraints has no satisfying
-// assignment; snarkjs's witness-calculator error names the exact line, so
-// the server reads it rather than assuming which one fired.
-const FAILURE_LINE_MERKLE = 75;
-const FAILURE_LINE_THRESHOLD = 81;
-const FAILURE_LINE_BLOCKED = 84;
+// Re-verified against this exact compiled circuit by triggering each case
+// and reading the real witness-calculator error, on 2026-09-07 — not
+// guessed. Adding custodian attestation changed more than the line numbers:
+// the EdDSA verifier is a *subcomponent*, so a signature failure surfaces as
+// a multi-line call chain naming its own internal templates
+// (ForceEqualIfEnabled -> EdDSAPoseidonVerifier -> Settlement), not a single
+// "Settlement line: N". A balance-tamper attempt now fails here first
+// (the custodian signed the real balance, so recomputing the leaf with a
+// different one breaks the signature before the Merkle check is even
+// reached) rather than at the Merkle line, which is what it hit before
+// attestation existed.
+//
+// Top-level Settlement hard-constraint lines (no subcomponent involved):
+// line 99 is the Merkle-path check, line 105 is the balance comparator,
+// line 108 is the custodian block-flag check.
+const FAILURE_LINE_MERKLE = 99;
+const FAILURE_LINE_THRESHOLD = 105;
+const FAILURE_LINE_BLOCKED = 108;
 
 function classifyWitnessFailure(err) {
   const message = String((err && err.message) || err);
-  const match = message.match(/line:\s*(\d+)/);
-  const line = match ? Number(match[1]) : null;
+
+  // A failure inside the custodian-signature subcomponent names its own
+  // templates in the call chain — check for those before falling back to a
+  // bare Settlement line number, since the regex below would otherwise
+  // match the *innermost* line (e.g. inside comparators.circom) rather
+  // than anything meaningful on its own.
+  if (/EdDSAPoseidonVerifier|ForceEqualIfEnabled/.test(message)) {
+    return {
+      failedAt: 'attestation',
+      error:
+        'This leaf’s claimed balance and block status do not carry a valid signature from the known custodian key. The proof cannot be constructed.',
+    };
+  }
+
+  const settlementLines = [...message.matchAll(/Settlement_\d+ line:\s*(\d+)/g)].map((m) => Number(m[1]));
+  const line = settlementLines.length ? settlementLines[settlementLines.length - 1] : null;
 
   if (line === FAILURE_LINE_MERKLE) {
     return {

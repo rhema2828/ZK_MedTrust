@@ -14,7 +14,13 @@ cd "$ROOT"
 
 CIRCOM_VERSION="v2.1.9"
 BUILD="build"
-POT_POWER=12
+# Bumped from 12 to 14 when custodian EdDSA attestation was added: that
+# verifier's scalar multiplications took the circuit from 2,303 to 6,510
+# non-linear constraints, and snarkjs's own sizing check rejects 2^12 (and
+# even 2^13) for a circuit this size ("6510*2 > 2**N"). This is exactly the
+# ceiling the original brief warned would be the first thing to break —
+# flagging it here rather than bumping it silently, per that rule.
+POT_POWER=14
 PTAU_0="$BUILD/pot${POT_POWER}_0.ptau"
 PTAU_1="$BUILD/pot${POT_POWER}_1.ptau"
 PTAU_FINAL="$BUILD/pot${POT_POWER}_final.ptau"

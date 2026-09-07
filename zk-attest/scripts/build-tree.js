@@ -16,14 +16,26 @@
 // all for a flagged account. One demo account (1005) is hardcoded blocked so
 // this is backed by a real leaf and a real failing constraint, not narration.
 //
+// Every leaf is also signed by a custodian EdDSA-Poseidon (Baby Jubjub) key:
+// signature = signPoseidon(custodianPrivateKey, leafHash). The circuit
+// verifies this signature in-circuit against a public custodian key, so a
+// balance/block-status claim with no matching signature cannot produce a
+// witness at all — the leaf is trusted because the custodian actually
+// attested to it, not merely because this script wrote it into the tree.
+// The custodian private key is demo-deterministic (SHA-256 of a fixed
+// string, same reproducibility rationale as the salts below) — a real
+// deployment would hold it outside this repo entirely.
+//
 // Every level of the tree is kept (not just the leaves), so extracting a
 // sibling path for a witness is an array lookup, not a recomputation.
 
 const crypto = require('crypto');
-const { buildPoseidon } = require('circomlibjs');
+const { buildPoseidon, buildEddsa } = require('circomlibjs');
 
 const DEPTH = 8;
 const NUM_LEAVES = 1 << DEPTH; // 256
+
+const CUSTODIAN_PRIVATE_KEY_SEED = 'zk-attest-demo-custodian-eddsa-key-v1';
 
 // Institution book. `role` is demo narration only — never enters the circuit.
 // `blocked` DOES enter the circuit (folded into the leaf) — it is a real
@@ -42,11 +54,26 @@ function getPoseidon() {
   return poseidonPromise;
 }
 
+let eddsaPromise = null;
+function getEddsa() {
+  if (!eddsaPromise) eddsaPromise = buildEddsa();
+  return eddsaPromise;
+}
+
 function fieldFromSeed(seed) {
   const digest = crypto.createHash('sha256').update(seed).digest();
   let x = 0n;
   for (const b of digest) x = (x << 8n) | BigInt(b);
   return x; // reduced mod field prime by poseidon.F.e() at hash time
+}
+
+// The custodian's EdDSA private key: 32 raw bytes, demo-deterministic via
+// SHA-256 of a fixed seed string. `signPoseidon`/`prv2pub` internally derive
+// the actual signing scalar from this buffer via blake512 + standard EdDSA
+// clamping — this is just the 32-byte seed they expect, not the scalar
+// itself.
+function custodianPrivateKeyBuffer() {
+  return crypto.createHash('sha256').update(CUSTODIAN_PRIVATE_KEY_SEED).digest();
 }
 
 // Deterministic per-account salt: SHA-256("zk-attest-demo-salt:<accountId>").
@@ -56,16 +83,31 @@ function saltFor(accountId) {
 
 async function buildTree() {
   const poseidon = await getPoseidon();
+  const eddsa = await getEddsa();
   const F = poseidon.F;
+
+  const custodianPrv = custodianPrivateKeyBuffer();
+  const custodianPub = eddsa.prv2pub(custodianPrv); // [Ax, Ay] in babyJub.F representation
+  const eddsaF = eddsa.F; // babyJub's own field object — used for all Ax/Ay/R8x/R8y conversions below
 
   const accounts = BOOK.map((entry) => ({ ...entry, salt: saltFor(entry.accountId) }));
 
   // Leaves, in fixed slot order (slot i = accounts[i], remaining slots = 0).
+  // Each leaf is also signed by the custodian key — signPoseidon's message
+  // argument must already be a field element in the same representation
+  // Poseidon just produced it in, which it is (both use the BN254 base
+  // field), so the raw Poseidon output is passed straight through as `msg`.
   const leaves = new Array(NUM_LEAVES).fill(0n);
   for (let i = 0; i < accounts.length; i++) {
     const a = accounts[i];
-    const h = poseidon([BigInt(a.accountId), BigInt(a.balance), a.salt, BigInt(a.blocked)]);
-    leaves[i] = F.toObject(h);
+    const leafHash = poseidon([BigInt(a.accountId), BigInt(a.balance), a.salt, BigInt(a.blocked)]);
+    leaves[i] = F.toObject(leafHash);
+    const sig = eddsa.signPoseidon(custodianPrv, leafHash);
+    a.attestation = {
+      R8x: eddsaF.toObject(sig.R8[0]),
+      R8y: eddsaF.toObject(sig.R8[1]),
+      S: sig.S,
+    };
   }
 
   // levels[0] = leaves, levels[DEPTH] = [root]
@@ -82,7 +124,12 @@ async function buildTree() {
 
   const root = levels[DEPTH][0];
 
-  return { poseidon, F, accounts, levels, root };
+  const custodianPubKey = {
+    Ax: eddsaF.toObject(custodianPub[0]),
+    Ay: eddsaF.toObject(custodianPub[1]),
+  };
+
+  return { poseidon, F, accounts, levels, root, custodianPubKey };
 }
 
 function slotIndexOf(tree, accountId) {
@@ -114,15 +161,18 @@ function pathFor(tree, slot) {
 // Builds the exact circuit-input object for circuits/settlement.circom.
 //
 // `overrideBalance`, when set, is written into the witness's `balance`
-// signal in place of the account's real (tree-committed) balance — the leaf
-// itself is unchanged, so the witness's own claimed balance no longer
-// matches what was hashed into the tree. That mismatch is what makes
-// mp.root === merkleRoot fail: this is the balance-mismatch tamper case, not
-// a shortcut past it.
+// signal in place of the account's real (tree-committed) balance. The
+// custodian's signature was computed over the *real* leaf, so this override
+// now fails two ways at once: the recomputed leaf no longer matches what
+// the custodian signed (EdDSA check fails) AND no longer matches what was
+// hashed into the tree (Merkle check fails). Whichever assertion the
+// witness calculator reaches first is the one reported — see AUDIT.md for
+// which one that empirically is on the current compiled circuit.
 //
-// Proving for a `blocked: 1` account (1005) with no override at all already
-// fails on its own, at the `blocked === 0` constraint — that's the
-// blocked-account case, distinct from a balance mismatch.
+// Proving for a `blocked: 1` account (1005) with no override at all fails
+// on its own, at the `blocked === 0` constraint — a genuinely-signed,
+// genuinely-in-tree, above-threshold account that the custodian has simply
+// flagged. Distinct from a balance mismatch.
 async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {}) {
   const tree = await buildTree();
   const slot = slotIndexOf(tree, accountId);
@@ -137,11 +187,16 @@ async function witnessFor(accountId, { threshold, tradeId, overrideBalance } = {
       salt: account.salt.toString(),
       accountId: String(account.accountId),
       blocked: String(account.blocked),
+      attestationR8x: account.attestation.R8x.toString(),
+      attestationR8y: account.attestation.R8y.toString(),
+      attestationS: account.attestation.S.toString(),
       pathElements: pathElements.map(String),
       pathIndices: pathIndices.map(String),
       merkleRoot: tree.root.toString(),
       threshold: String(threshold),
       tradeId: String(tradeId),
+      custodianPubKeyAx: tree.custodianPubKey.Ax.toString(),
+      custodianPubKeyAy: tree.custodianPubKey.Ay.toString(),
     },
     tree,
     account,
@@ -154,11 +209,16 @@ async function getRoot() {
   return tree.root.toString();
 }
 
+async function getCustodianPubKey() {
+  const tree = await buildTree();
+  return { Ax: tree.custodianPubKey.Ax.toString(), Ay: tree.custodianPubKey.Ay.toString() };
+}
+
 function getBook() {
   return BOOK.map(({ accountId, balance, blocked, name, role }) => ({ accountId, balance, blocked, name, role }));
 }
 
-module.exports = { DEPTH, NUM_LEAVES, BOOK, buildTree, witnessFor, getRoot, getBook, slotIndexOf, pathFor };
+module.exports = { DEPTH, NUM_LEAVES, BOOK, buildTree, witnessFor, getRoot, getCustodianPubKey, getBook, slotIndexOf, pathFor };
 
 // CLI entry point: print the root, the book, and a sample honest + tampered
 // witness so this is checkable directly (`node scripts/build-tree.js`).
@@ -182,9 +242,10 @@ if (require.main === module) {
     const tampered = await witnessFor(1003, { threshold: 1000000, tradeId: 20260907001, overrideBalance: 5000000 });
     console.log(JSON.stringify(tampered.input, null, 2));
     console.log();
-    console.log('(this witness will fail the circuit at mp.root === merkleRoot — the leaf');
-    console.log(' that was actually committed to the tree hashed the real $250,000 balance,');
-    console.log(' not the $5,000,000 written into this witness, so the recomputed root differs.)');
+    console.log('(this witness will fail: the custodian signed the leaf with the real $250,000');
+    console.log(' balance, so recomputing the leaf with $5,000,000 instead breaks both the');
+    console.log(' signature check and the Merkle root check — see AUDIT.md for which one the');
+    console.log(' witness calculator actually reports first on the compiled circuit.)');
 
     console.log();
     console.log('--- blocked-account witness, account 1005, no override needed ---');
