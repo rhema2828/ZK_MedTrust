@@ -234,7 +234,55 @@ function getBook() {
   return BOOK.map(({ accountId, balance, blocked, name, role }) => ({ accountId, balance, blocked, name, role }));
 }
 
-module.exports = { DEPTH, NUM_LEAVES, BOOK, buildTree, witnessFor, getRoot, getCustodianPubKey, getBook, slotIndexOf, pathFor, isUsingDefaultCustodianKey };
+// Demo-only transparency helper: returns the full plaintext construction of
+// one account's Merkle leaf — salt, leaf hash, custodian signature, and
+// Merkle path — every field `witnessFor`/`/api/prove` otherwise treat as
+// private witness data. This is safe specifically because these are the 5
+// staged demo accounts whose balances `getBook()`/`/api/book/treasury`
+// already discloses to everyone; a real deployment would never expose this.
+// It exists purely so a caller can see how a human claim ("Meridian
+// Capital Partners' balance clears $1,000,000") becomes the actual field
+// elements a real proof is built from, not just be told it does. It is not
+// part of the proving/verification path itself and `/api/prove` does not
+// call it.
+async function explainWitness(accountId) {
+  const tree = await buildTree();
+  const slot = slotIndexOf(tree, accountId);
+  const account = tree.accounts[slot];
+  const { pathElements, pathIndices } = pathFor(tree, slot);
+  return {
+    accountId: account.accountId,
+    name: account.name,
+    balance: account.balance,
+    blocked: account.blocked,
+    salt: account.salt.toString(),
+    leafHash: tree.levels[0][slot].toString(),
+    attestation: {
+      R8x: account.attestation.R8x.toString(),
+      R8y: account.attestation.R8y.toString(),
+      S: account.attestation.S.toString(),
+    },
+    pathElements: pathElements.map(String),
+    pathIndices,
+    merkleRoot: tree.root.toString(),
+    custodianPubKey: { Ax: tree.custodianPubKey.Ax.toString(), Ay: tree.custodianPubKey.Ay.toString() },
+  };
+}
+
+module.exports = {
+  DEPTH,
+  NUM_LEAVES,
+  BOOK,
+  buildTree,
+  witnessFor,
+  getRoot,
+  getCustodianPubKey,
+  getBook,
+  slotIndexOf,
+  pathFor,
+  isUsingDefaultCustodianKey,
+  explainWitness,
+};
 
 // CLI entry point: print the root, the book, and a sample honest + tampered
 // witness so this is checkable directly (`node scripts/build-tree.js`).

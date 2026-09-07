@@ -229,3 +229,47 @@ test('audit log records prove/tamper calls without ever including balance, salt,
     );
   }
 });
+
+// ------------------------------------------------------------ /api/witness
+
+test('GET /api/witness/:accountId exposes the real leaf construction, matching the committed root', async () => {
+  const { status, body } = await get('/api/witness/1001');
+  assert.equal(status, 200);
+  assert.equal(body.accountId, 1001);
+  assert.equal(body.balance, 12500000);
+  assert.equal(body.blocked, 0);
+  assert.ok(body.salt);
+  assert.ok(body.leafHash);
+  assert.ok(body.attestation.R8x);
+  assert.ok(body.attestation.R8y);
+  assert.ok(body.attestation.S);
+  const { DEPTH } = await import('../scripts/build-tree.js');
+  assert.equal(body.pathElements.length, DEPTH);
+  assert.equal(body.pathIndices.length, DEPTH);
+  // Must agree with the treasury book's committed root — same tree, two views of it.
+  const treasury = await get('/api/book/treasury');
+  assert.equal(body.merkleRoot, treasury.body.merkleRoot);
+  assert.deepEqual(body.custodianPubKey, treasury.body.custodianPubKey);
+});
+
+test('GET /api/witness/:accountId is internally consistent: recomputing Poseidon(leaf inputs) matches leafHash', async () => {
+  const { buildPoseidon } = await import('circomlibjs');
+  const poseidon = await buildPoseidon();
+  const { body } = await get('/api/witness/1001');
+  const recomputed = poseidon.F.toObject(
+    poseidon([BigInt(body.accountId), BigInt(body.balance), BigInt(body.salt), BigInt(body.blocked)]),
+  );
+  assert.equal(recomputed.toString(), body.leafHash);
+});
+
+test('GET /api/witness/:accountId 404s for an account not in the book', async () => {
+  const { status, body } = await get('/api/witness/9999');
+  assert.equal(status, 404);
+  assert.ok(body.error);
+});
+
+test('GET /api/witness/:accountId 400s for a non-numeric accountId', async () => {
+  const { status, body } = await get('/api/witness/not-a-number');
+  assert.equal(status, 400);
+  assert.ok(body.error);
+});

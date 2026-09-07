@@ -76,6 +76,41 @@ export type ExchangeBook = {
 
 export type TamperMode = 'blocked_account' | 'balance_mismatch' | 'merkle_mismatch'
 
+// From GET /api/witness/:accountId — a demo-only transparency endpoint, not
+// part of the proving/verification path. Reveals the full plaintext leaf
+// construction (salt, leaf hash, custodian signature, Merkle path) for one
+// of the 5 staged demo accounts, so the "human claim -> field elements"
+// pipeline can be shown with real values instead of asserted. Safe only
+// because these accounts' balances are already public via getTreasuryBook().
+export type WitnessExplanation = {
+  accountId: number
+  name: string
+  balance: number
+  blocked: 0 | 1
+  salt: string
+  leafHash: string
+  attestation: { R8x: string; R8y: string; S: string }
+  pathElements: string[]
+  pathIndices: number[]
+  merkleRoot: string
+  custodianPubKey: { Ax: string; Ay: string }
+}
+
+export type AuditLogEntry = {
+  timestamp: string
+  endpoint: 'prove' | 'tamper'
+  accountId: number
+  result: 'success' | 'rejected'
+  reason: string | null
+  mode?: TamperMode
+}
+
+export type AuditLog = {
+  entries: AuditLogEntry[]
+  count: number
+  maxEntries: number
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_ZK_ATTEST_API_URL ?? 'http://localhost:3000'
 
 async function postProve(path: string, body: unknown): Promise<ProveResult> {
@@ -150,4 +185,16 @@ export async function verifyProof(proof: GrothProof, publicSignals: PublicSignal
 
 export async function runTamper(params: { mode: TamperMode; accountId?: number; threshold: number; tradeId: number }): Promise<ProveResult> {
   return postProve('/api/tamper', params)
+}
+
+export async function getWitnessExplanation(accountId: number): Promise<WitnessExplanation> {
+  const response = await fetch(`${API_BASE_URL}/api/witness/${accountId}`)
+  if (!response.ok) throw new Error(`Failed to load the witness explanation for account ${accountId} (${response.status}).`)
+  return response.json()
+}
+
+export async function getAuditLog(): Promise<AuditLog> {
+  const response = await fetch(`${API_BASE_URL}/api/audit-log`)
+  if (!response.ok) throw new Error(`Failed to load the audit log (${response.status}).`)
+  return response.json()
 }

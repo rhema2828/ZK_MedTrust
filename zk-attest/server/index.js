@@ -16,7 +16,7 @@ const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const snarkjs = require('snarkjs');
-const { witnessFor, getRoot, getCustodianPubKey, getBook, DEPTH, isUsingDefaultCustodianKey } = require('../scripts/build-tree');
+const { witnessFor, getRoot, getCustodianPubKey, getBook, DEPTH, isUsingDefaultCustodianKey, explainWitness } = require('../scripts/build-tree');
 
 const ROOT = path.join(__dirname, '..');
 const BUILD = path.join(ROOT, 'build');
@@ -390,6 +390,34 @@ app.get('/api/status', (req, res) => {
 // ----------------------------------------------------------- /api/audit-log
 app.get('/api/audit-log', (req, res) => {
   res.json({ entries: auditLog, count: auditLog.length, maxEntries: AUDIT_LOG_MAX_ENTRIES });
+});
+
+// ------------------------------------------------------ /api/witness/:id
+//
+// Demo-only transparency endpoint — not part of the proving/verification
+// path. Reveals the full plaintext leaf construction (salt, leaf hash,
+// custodian signature, Merkle path) for one of the 5 staged demo accounts,
+// so a caller can see exactly how a human claim like "this account clears
+// $1,000,000" becomes the field elements /api/prove actually builds a real
+// proof from. Safe here only because these accounts' balances are already
+// public via /api/book/treasury; a real deployment would never wire this
+// up for real account data. Not written to the audit log — it's a read of
+// already-public demo data, not a proof attempt.
+app.get('/api/witness/:accountId', async (req, res, next) => {
+  try {
+    const accountId = Number(req.params.accountId);
+    if (!Number.isFinite(accountId)) {
+      return res.status(400).json({ error: 'accountId must be a number.' });
+    }
+    const book = getBook();
+    if (!book.find((a) => a.accountId === accountId)) {
+      return res.status(404).json({ error: `No account ${accountId} in the custodian's book.` });
+    }
+    const explanation = await explainWitness(accountId);
+    res.json(explanation);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ------------------------------------------------------------- 404 + errors

@@ -347,6 +347,50 @@ curl http://localhost:3000/api/audit-log
 
 ---
 
+## `GET /api/witness/:accountId`
+
+**Demo-only transparency endpoint — not part of the proving/verification path.** Every other endpoint above treats an account's balance, salt, custodian signature, and Merkle path as private witness data that never appears in a response. This one exists to show, not just assert, how those private values are actually constructed from a plain-language claim like "Meridian Capital Partners' balance clears $1,000,000, per the custodian's own signed record" — it returns the real leaf hash, the real EdDSA-Poseidon signature, and the real Merkle path for one of the 5 staged demo accounts. This is safe here specifically because those accounts' balances are already public via `GET /api/book/treasury`; a real deployment would never wire this endpoint up for genuine account data.
+
+**Request**: no body. `:accountId` is a path parameter.
+
+**Response** `200`, real example (`GET /api/witness/1001`):
+```json
+{
+  "accountId": 1001,
+  "name": "Meridian Capital Partners",
+  "balance": 12500000,
+  "blocked": 0,
+  "salt": "103280760570086683896311644805341899282995409812372245832564868068911651953825",
+  "leafHash": "7158725669462070414958269187417101591536444332835519644797902485133676545765",
+  "attestation": {
+    "R8x": "16044856057799449703457218898187648606764794907814216093592125150509744918292",
+    "R8y": "13254554457940560633465115261076506281586099658470760767355341208504674422416",
+    "S": "2731643742010024063628335918470629766807796567100519469529565723250523059975"
+  },
+  "pathElements": ["...", "... (8 total, one per tree depth)"],
+  "pathIndices": [0, 0, 0, 0, 0, 0, 0, 0],
+  "merkleRoot": "5926933136962150110037142965096040245700348465956023869488266929899111796712",
+  "custodianPubKey": {
+    "Ax": "5865220112433696882887055243045610474363543799613121988013131740146980953685",
+    "Ay": "9709176769543063684874449670475569717231731735851790820511725120062754544518"
+  }
+}
+```
+`leafHash` is `Poseidon(accountId, balance, salt, blocked)` — recomputing it from the other four fields with any Poseidon implementation reproduces this value exactly (see `test/server.test.mjs`, which does exactly that with a fresh `circomlibjs` instance as its own check). `merkleRoot` and `custodianPubKey` always agree with `GET /api/book/treasury` — same tree, two views of it.
+
+**Errors**:
+- `400` — non-numeric `:accountId`.
+- `404` — no such account in the custodian's book:
+  ```json
+  { "error": "No account 9999 in the custodian's book." }
+  ```
+
+```
+curl http://localhost:3000/api/witness/1001
+```
+
+---
+
 ## Errors not tied to a specific endpoint
 
 **Unknown route** — `404`, real example:

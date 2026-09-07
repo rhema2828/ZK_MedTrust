@@ -11,6 +11,7 @@ import {
   type Institution,
 } from '@/lib/zk-attest-api'
 import ZKAttestScene from '@/components/zk-attest-scene'
+import CryptoConsole from '@/components/crypto-console'
 
 type Verdict = 'ready' | 'authorized' | 'blocked' | 'rejected' | 'error'
 
@@ -43,6 +44,7 @@ function Header({ sanctions, onToggle }: { sanctions: boolean; onToggle: () => v
       <nav aria-label="Main navigation">
         <a href="#overview">Overview</a>
         <a href="#settlement">Settlement</a>
+        <a href="#console">Proof of work</a>
         <a href="#architecture">Architecture</a>
       </nav>
       <button className={`sanctions-control ${sanctions ? 'active' : ''}`} onClick={onToggle} aria-pressed={sanctions}>
@@ -266,6 +268,7 @@ export default function Page() {
   const [loading, setLoading] = useState(false)
   const [traceOpen, setTraceOpen] = useState(false)
   const [book, setBook] = useState<TreasuryBook | null>(null)
+  const [auditTick, setAuditTick] = useState(0)
 
   useEffect(() => {
     getTreasuryBook().then(setBook).catch(() => setBook(null))
@@ -289,6 +292,7 @@ export default function Page() {
 
     setResult(outcome)
     setLoading(false)
+    setAuditTick((t) => t + 1)
 
     if (outcome.ok) {
       setVerdict('authorized')
@@ -310,6 +314,7 @@ export default function Page() {
       <Comparison book={book} />
       <Settlement account={account} onRequest={request} loading={loading} verdict={verdict} result={result} errorMessage={errorMessage} />
       <Trace result={result} open={traceOpen} onToggle={() => setTraceOpen((open) => !open)} verdict={verdict} />
+      <CryptoConsole book={book} auditTick={auditTick} />
       <Architecture />
       <footer><span>ZK—ATTEST / CRYT_NEW</span><span>PRIVATE CLEARING INFRASTRUCTURE</span><span>DEMO ENVIRONMENT · 2026</span></footer>
     </main>
